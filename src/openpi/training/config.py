@@ -175,7 +175,7 @@ class ModelTransformFactory(GroupFactory):
 @dataclasses.dataclass(frozen=True)
 class DataConfigFactory(abc.ABC):
     # The LeRobot repo id.
-    repo_id: str = tyro.MISSING
+    repo_id: str | None = tyro.MISSING
     # Optional multiple LeRobot repos.
     repo_ids: Sequence[str] | None = None
     use_multi_repo: bool = False

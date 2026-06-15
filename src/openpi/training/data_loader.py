@@ -143,7 +143,10 @@ def create_torch_dataset(
             raise ValueError("repo_ids must be set when use_multi_repo=True.")
 
         dataset_metas = [
-            lerobot_dataset.LeRobotDatasetMetadata(multi_repo_id, root=data_config.root)
+            lerobot_dataset.LeRobotDatasetMetadata(
+                multi_repo_id,
+                root=os.path.join(data_config.root, multi_repo_id) if data_config.root is not None else None,
+            )
             for multi_repo_id in data_config.repo_ids
         ]
         fps = dataset_metas[0].fps
