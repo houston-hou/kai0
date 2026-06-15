@@ -21,7 +21,6 @@ import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
-import openpi.shared.nnx_utils as nnx_utils
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.polaris_config as polaris_config
@@ -1026,51 +1025,6 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=20_000,
         batch_size=64,
-    ),
-    TrainConfig(
-        name="pi05_aloha_measure_liquid_full",
-        model=pi0_config.Pi0Config(pi05=True),
-        data=LeRobotAlohaDataConfig(
-            repo_id="/mnt/hdy/emchem_pi05/training_data/measure_liquid_full",
-            assets=AssetsConfig(asset_id="measure_liquid_full"),
-            repack_transforms=_transforms.Group(
-                inputs=[
-                    _transforms.RepackTransform(
-                        {
-                            "images": {
-                                "cam_high": "observation.images.cam_high",
-                                "cam_left_wrist": "observation.images.cam_left_wrist",
-                                "cam_right_wrist": "observation.images.cam_right_wrist",
-                            },
-                            "state": "observation.state",
-                            "actions": "action",
-                            "prompt": "prompt",
-                        }
-                    )
-                ]
-            ),
-            base_config=DataConfig(prompt_from_task=True),
-        ),
-        freeze_filter=nnx.All(
-            nnx_utils.PathRegex(r".*llm.*"),
-            nnx.Not(nnx_utils.PathRegex(r".*llm.*_1.*")),
-        ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("/mnt/hdy/kai0-main/weights_cache/openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=5000,
-        log_interval=50,
-        save_interval=1000,
-        keep_period=None,
-        num_workers=0,
-        batch_size=16,
-        fsdp_devices=1,
-        wandb_enabled=False,
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            peak_lr=2e-4,
-            warmup_steps=1000,
-            decay_steps=10_000,
-            decay_lr=1e-5,
-        ),
-        optimizer=_optimizer.AdamW(),
     ),
     #
     # Fine-tuning DROID configs.
