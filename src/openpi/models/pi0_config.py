@@ -1,5 +1,5 @@
 import dataclasses
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import flax.nnx as nnx
 import jax
@@ -32,12 +32,34 @@ class Pi0Config(_model.BaseModelConfig):
     pi05: bool = False
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
+    # Which arm the policy should learn/control for 14-dim dual-arm Kai0-style actions.
+    # "left" keeps loss on dims [0:7] and freezes the right arm during policy output;
+    # "right" keeps loss on dims [7:14] and freezes the left arm during policy output.
+    active_arm: Literal["both", "left", "right"] = "both"
+    # Optional explicit action loss mask. If set, this overrides active_arm for training loss.
+    action_loss_mask: tuple[bool, ...] | None = None
 
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:
             object.__setattr__(self, "discrete_state_input", self.pi05)
+        if self.active_arm not in ("both", "left", "right"):
+            raise ValueError(f"Invalid active_arm={self.active_arm!r}. Expected 'both', 'left', or 'right'.")
+
+    def action_loss_mask_for_dim(self, action_dim: int) -> tuple[bool, ...] | None:
+        if self.action_loss_mask is not None:
+            mask = tuple(self.action_loss_mask)
+            if len(mask) > action_dim:
+                return mask[:action_dim]
+            return mask + (False,) * (action_dim - len(mask))
+        if self.active_arm == "both":
+            return None
+        mask = [False] * action_dim
+        start, end = (0, 7) if self.active_arm == "left" else (7, 14)
+        for idx in range(start, min(end, action_dim)):
+            mask[idx] = True
+        return tuple(mask)
 
     @property
     @override

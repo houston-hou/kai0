@@ -254,6 +254,36 @@ class AbsoluteActions(DataTransformFn):
         return data
 
 
+@dataclasses.dataclass(frozen=True)
+class FreezeStationaryArm(DataTransformFn):
+    """Keeps the non-active arm at the current observed state for 14-dim dual-arm actions."""
+
+    active_arm: str = "both"
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if self.active_arm == "both" or "actions" not in data:
+            return data
+        if self.active_arm not in ("left", "right"):
+            raise ValueError(f"Invalid active_arm={self.active_arm!r}. Expected 'both', 'left', or 'right'.")
+        if "state" not in data:
+            raise ValueError("Cannot freeze stationary arm without state in policy output data.")
+
+        actions = np.asarray(data["actions"]).copy()
+        state = np.asarray(data["state"])
+        start, end = (7, 14) if self.active_arm == "left" else (0, 7)
+        end = min(end, actions.shape[-1], state.shape[-1])
+        if end <= start:
+            data["actions"] = actions
+            return data
+
+        stationary_state = state[..., start:end]
+        while stationary_state.ndim < actions[..., start:end].ndim:
+            stationary_state = np.expand_dims(stationary_state, axis=-2)
+        actions[..., start:end] = stationary_state
+        data["actions"] = actions
+        return data
+
+
 # @dataclasses.dataclass(frozen=True)
 # class TokenizePrompt(DataTransformFn):
 #     tokenizer: _tokenizer.PaligemmaTokenizer

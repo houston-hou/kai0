@@ -86,6 +86,7 @@ class PI0Pytorch(nn.Module):
         super().__init__()
         self.config = config
         self.pi05 = config.pi05
+        self.action_loss_mask = config.action_loss_mask_for_dim(config.action_dim)
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -182,6 +183,13 @@ class PI0Pytorch(nn.Module):
         time_beta = sample_beta(1.5, 1.0, bsize, device)
         time = time_beta * 0.999 + 0.001
         return time.to(dtype=torch.float32, device=device)
+
+    def _action_loss_per_timestep(self, u_t, v_t):
+        per_dim_loss = F.mse_loss(u_t, v_t, reduction="none")
+        if self.action_loss_mask is None:
+            return per_dim_loss.mean(dim=-1)
+        mask = torch.as_tensor(self.action_loss_mask, dtype=per_dim_loss.dtype, device=per_dim_loss.device)
+        return (per_dim_loss * mask).sum(dim=-1) / mask.sum().clamp_min(1.0)
 
     def embed_prefix(
         self, images, img_masks, lang_tokens, lang_masks
@@ -370,7 +378,7 @@ class PI0Pytorch(nn.Module):
 
         v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
 
-        return F.mse_loss(u_t, v_t, reduction="none")
+        return self._action_loss_per_timestep(u_t, v_t)
 
     @torch.no_grad()
     def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
@@ -560,8 +568,8 @@ class AdvantageEstimator(PI0Pytorch):
 
         # --- Start of Modifications ---
 
-        # Calculate action loss, taking the mean over the action dimension to match JAX implementation
-        loss_action = F.mse_loss(u_t, v_t, reduction="none").mean(dim=-1) # Shape: (B, AH)
+        # Calculate action loss, optionally masking stationary arm dimensions.
+        loss_action = self._action_loss_per_timestep(u_t, v_t)  # Shape: (B, AH)
         loss = loss_action * self.loss_action_weight
 
         loss_aux_dict = {}

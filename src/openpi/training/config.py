@@ -262,7 +262,10 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         data_transforms = _transforms.Group(
             inputs=[aloha_policy.AlohaInputs(adapt_to_pi=self.adapt_to_pi)],
-            outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=self.adapt_to_pi)],
+            outputs=[
+                _transforms.FreezeStationaryArm(getattr(model_config, "active_arm", "both")),
+                aloha_policy.AlohaOutputs(adapt_to_pi=self.adapt_to_pi),
+            ],
         )
         if self.use_delta_joint_actions:
             delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
@@ -427,7 +430,10 @@ class LerobotAgilexDataConfig(DataConfigFactory):
                     mask_state=self.mask_state,
                 )
             ],
-            outputs=[agilex_policy.AgilexOutputs()],
+            outputs=[
+                _transforms.FreezeStationaryArm(getattr(model_config, "active_arm", "both")),
+                agilex_policy.AgilexOutputs(),
+            ],
         )
         if self.insert_advantage_into_prompt:
             data_transforms.inputs.insert(0, _transforms.InsertAdvantageIntoPrompt())
@@ -522,7 +528,10 @@ class LerobotARXDataConfig(DataConfigFactory):
                     mask_state=self.mask_state,
                 )
             ],
-            outputs=[arx_policy.ARXOutputs()],
+            outputs=[
+                _transforms.FreezeStationaryArm(getattr(model_config, "active_arm", "both")),
+                arx_policy.ARXOutputs(),
+            ],
         )
         if self.insert_advantage_into_prompt:
             data_transforms.inputs.insert(0, _transforms.InsertAdvantageIntoPrompt())
@@ -1029,7 +1038,7 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi05_aloha_measure_liquid_full",
-        model=pi0_config.Pi0Config(pi05=True),
+        model=pi0_config.Pi0Config(pi05=True, active_arm="left"),
         data=LeRobotAlohaDataConfig(
             repo_id="/mnt/hdy/emchem_pi05/training_data/measure_liquid_full",
             assets=AssetsConfig(asset_id="measure_liquid_full"),

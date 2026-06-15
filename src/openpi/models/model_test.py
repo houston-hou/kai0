@@ -24,6 +24,16 @@ def test_pi0_model():
     assert actions.shape == (batch_size, model.action_horizon, model.action_dim)
 
 
+def test_pi0_active_arm_action_loss_mask():
+    left_config = pi0_config.Pi0Config(active_arm="left")
+    right_config = pi0_config.Pi0Config(active_arm="right")
+    custom_config = pi0_config.Pi0Config(active_arm="left", action_loss_mask=(True, False))
+
+    assert left_config.action_loss_mask_for_dim(14) == (True,) * 7 + (False,) * 7
+    assert right_config.action_loss_mask_for_dim(14) == (False,) * 7 + (True,) * 7
+    assert custom_config.action_loss_mask_for_dim(4) == (True, False, False, False)
+
+
 def test_pi0_lora_model():
     key = jax.random.key(0)
     config = pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora")

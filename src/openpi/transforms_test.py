@@ -62,6 +62,30 @@ def test_absolute_actions_noop():
     assert transform(item) is item
 
 
+def test_freeze_stationary_arm():
+    item = {
+        "state": np.arange(14),
+        "actions": np.full((2, 14), 100),
+    }
+
+    transformed = _transforms.FreezeStationaryArm(active_arm="left")(item)
+
+    assert np.all(transformed["actions"][:, :7] == 100)
+    assert np.all(transformed["actions"][:, 7:14] == np.arange(7, 14))
+
+
+def test_freeze_stationary_arm_right_active():
+    item = {
+        "state": np.arange(14),
+        "actions": np.full((2, 14), 100),
+    }
+
+    transformed = _transforms.FreezeStationaryArm(active_arm="right")(item)
+
+    assert np.all(transformed["actions"][:, :7] == np.arange(7))
+    assert np.all(transformed["actions"][:, 7:14] == 100)
+
+
 def test_make_bool_mask():
     assert _transforms.make_bool_mask(2, -2, 2) == (True, True, False, False, True, True)
     assert _transforms.make_bool_mask(2, 0, 2) == (True, True, True, True)
