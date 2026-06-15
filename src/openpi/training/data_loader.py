@@ -133,21 +133,48 @@ def create_torch_dataset(
 ) -> Dataset:
     """Create a dataset for training."""
     repo_id = data_config.repo_id
-    if repo_id is None:
+    if repo_id is None and not data_config.use_multi_repo:
         raise ValueError("Repo ID is not set. Cannot create dataset.")
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
-    dataset = lerobot_dataset.LeRobotDataset(
-        data_config.repo_id,
-        delta_timestamps={
-            key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
-        },
-    )
+    if data_config.use_multi_repo:
+        if not data_config.repo_ids:
+            raise ValueError("repo_ids must be set when use_multi_repo=True.")
 
-    if data_config.prompt_from_task:
-        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+        dataset_metas = [
+            lerobot_dataset.LeRobotDatasetMetadata(multi_repo_id, root=data_config.root)
+            for multi_repo_id in data_config.repo_ids
+        ]
+        fps = dataset_metas[0].fps
+        mismatched_fps = {
+            multi_repo_id: meta.fps
+            for multi_repo_id, meta in zip(data_config.repo_ids, dataset_metas, strict=True)
+            if meta.fps != fps
+        }
+        if mismatched_fps:
+            raise ValueError(f"All multi-repo datasets must use the same fps. Mismatched fps: {mismatched_fps}")
+
+        dataset = lerobot_dataset.MultiLeRobotDataset(
+            list(data_config.repo_ids),
+            root=data_config.root,
+            delta_timestamps={key: [t / fps for t in range(action_horizon)] for key in data_config.action_sequence_keys},
+        )
+
+        if data_config.prompt_from_task:
+            dataset = TransformedDataset(dataset, [_transforms.PromptFromMultiLeRobotTask(dataset_metas)])
+    else:
+        dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=data_config.root)
+        dataset = lerobot_dataset.LeRobotDataset(
+            data_config.repo_id,
+            root=data_config.root,
+            delta_timestamps={
+                key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
+            },
+        )
+
+        if data_config.prompt_from_task:
+            dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
 
     return dataset
 

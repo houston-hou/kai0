@@ -55,6 +55,18 @@ def process_actions(actions, action_dim):
     return actions
 
 
+def _data_dirs_from_config(data_config, base_dir: str | None) -> list[Path]:
+    if base_dir is not None:
+        return [Path(base_dir)]
+    if data_config.use_multi_repo:
+        if not data_config.root or not data_config.repo_ids:
+            raise ValueError("Multi-repo configs must set root and repo_ids, or pass --base-dir.")
+        return [Path(data_config.root) / repo_id for repo_id in data_config.repo_ids]
+    if data_config.repo_id is None:
+        raise ValueError("Either base_dir must be provided or config must have repo_id")
+    return [Path(data_config.repo_id)]
+
+
 def main(config_name: str, base_dir: str | None = None, max_frames: int | None = None):
     """
     Compute normalization statistics for a config.
@@ -69,19 +81,14 @@ def main(config_name: str, base_dir: str | None = None, max_frames: int | None =
     data_config = config.data.create(config.assets_dirs, config.model)
     action_dim = config.model.action_dim
     
-    # Determine base directory
-    if base_dir is None:
-        if data_config.repo_id is None:
-            raise ValueError("Either base_dir must be provided or config must have repo_id")
-        # Use repo_id as base directory (it contains the full path)
-        base_dir = data_config.repo_id
-        print(f"Auto-detected base directory from config: {base_dir}")
-    
-    base_path = Path(base_dir)
-    if not base_path.exists():
-        raise ValueError(f"Base directory does not exist: {base_dir}")
-    
-    print(f"Reading data from: {base_dir}")
+    data_dirs = _data_dirs_from_config(data_config, base_dir)
+    for data_dir in data_dirs:
+        if not data_dir.exists():
+            raise ValueError(f"Base directory does not exist: {data_dir}")
+
+    print("Reading data from:")
+    for data_dir in data_dirs:
+        print(f"  - {data_dir}")
     print(f"Action dimension: {action_dim}")
     
     # Keys to collect
@@ -97,10 +104,11 @@ def main(config_name: str, base_dir: str | None = None, max_frames: int | None =
     
     # Collect all parquet files
     parquet_files = []
-    for root, dirs, files in os.walk(base_dir):
-        for file in files:
-            if file.endswith(".parquet"):
-                parquet_files.append(os.path.join(root, file))
+    for data_dir in data_dirs:
+        for root, dirs, files in os.walk(data_dir):
+            for file in files:
+                if file.endswith(".parquet"):
+                    parquet_files.append(os.path.join(root, file))
     
     # Sort files for deterministic ordering (same as dataset ordering)
     parquet_files.sort()
@@ -213,7 +221,10 @@ def main(config_name: str, base_dir: str | None = None, max_frames: int | None =
             print(f"Warning: No data collected for key '{key}'")
     
     # Save statistics
-    output_path = config.assets_dirs / data_config.repo_id
+    asset_id = data_config.asset_id or data_config.repo_id
+    if asset_id is None:
+        raise ValueError("Data config must have an asset_id or repo_id to save normalization stats.")
+    output_path = config.assets_dirs / asset_id
     output_path.mkdir(parents=True, exist_ok=True)
     
     print(f"\nWriting stats to: {output_path}")

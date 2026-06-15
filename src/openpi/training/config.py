@@ -69,6 +69,11 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    # LeRobot repo ids. Used when training from multiple LeRobot datasets.
+    repo_ids: Sequence[str] | None = None
+    use_multi_repo: bool = False
+    # Local root for LeRobot datasets. For multiple repos this should contain one subdirectory per repo id.
+    root: str | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -171,6 +176,11 @@ class ModelTransformFactory(GroupFactory):
 class DataConfigFactory(abc.ABC):
     # The LeRobot repo id.
     repo_id: str = tyro.MISSING
+    # Optional multiple LeRobot repos.
+    repo_ids: Sequence[str] | None = None
+    use_multi_repo: bool = False
+    # Optional local LeRobot root.
+    root: str | None = None
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
@@ -186,6 +196,9 @@ class DataConfigFactory(abc.ABC):
         return dataclasses.replace(
             self.base_config or DataConfig(),
             repo_id=repo_id,
+            repo_ids=self.repo_ids,
+            use_multi_repo=self.use_multi_repo,
+            root=self.root,
             asset_id=asset_id,
             norm_stats=self._load_norm_stats(epath.Path(self.assets.assets_dir or assets_dirs), asset_id),
             use_quantile_norm=model_config.model_type not in (ModelType.PI0, ModelType.PI0_RTC),
@@ -1042,6 +1055,58 @@ _CONFIGS = [
         data=LeRobotAlohaDataConfig(
             repo_id="/mnt/hdy/emchem_pi05/training_data/measure_liquid_full",
             assets=AssetsConfig(asset_id="measure_liquid_full"),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        freeze_filter=nnx.All(
+            nnx_utils.PathRegex(r".*llm.*"),
+            nnx.Not(nnx_utils.PathRegex(r".*llm.*_1.*")),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/mnt/hdy/kai0-main/weights_cache/openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=5000,
+        log_interval=50,
+        save_interval=1000,
+        keep_period=None,
+        num_workers=0,
+        batch_size=16,
+        fsdp_devices=1,
+        wandb_enabled=False,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2e-4,
+            warmup_steps=1000,
+            decay_steps=10_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(),
+    ),
+    TrainConfig(
+        name="pi05_aloha_organ_multi",
+        model=pi0_config.Pi0Config(pi05=True, active_arm="left"),
+        data=LeRobotAlohaDataConfig(
+            repo_id=None,
+            use_multi_repo=True,
+            repo_ids=[
+                "measure_liquid_full_0604",
+                "measure_liquid_full_0605",
+                "measure_liquid_full_0606",
+            ],
+            root="/mnt/hdy/organ_data_le",
+            assets=AssetsConfig(asset_id="organ_data_le"),
             repack_transforms=_transforms.Group(
                 inputs=[
                     _transforms.RepackTransform(

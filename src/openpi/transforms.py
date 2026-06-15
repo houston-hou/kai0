@@ -1,7 +1,7 @@
 from collections.abc import Callable, Mapping, Sequence
 import dataclasses
 import re
-from typing import Protocol, TypeAlias, TypeVar, runtime_checkable
+from typing import Any, Protocol, TypeAlias, TypeVar, runtime_checkable
 
 import flax.traverse_util as traverse_util
 import jax
@@ -382,6 +382,31 @@ class PromptFromLeRobotTask(DataTransformFn):
         task_index = int(data["task_index"])
         if (prompt := self.tasks.get(task_index)) is None:
             raise ValueError(f"{task_index=} not found in task mapping: {self.tasks}")
+
+        return {**data, "prompt": prompt}
+
+
+@dataclasses.dataclass(frozen=True)
+class PromptFromMultiLeRobotTask(DataTransformFn):
+    """Extracts a prompt from the source LeRobot dataset task mapping."""
+
+    metas: Sequence[Any]
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "dataset_index" not in data:
+            raise ValueError('Cannot extract multi-repo prompt without "dataset_index"')
+        if "task_index" not in data:
+            raise ValueError('Cannot extract prompt without "task_index"')
+
+        dataset_index = int(data["dataset_index"])
+        try:
+            meta = self.metas[dataset_index]
+        except IndexError as exc:
+            raise ValueError(f"{dataset_index=} out of range for {len(self.metas)} dataset metadata entries") from exc
+
+        task_index = int(data["task_index"])
+        if (prompt := meta.tasks.get(task_index)) is None:
+            raise ValueError(f"{task_index=} not found in task mapping for {dataset_index=}: {meta.tasks}")
 
         return {**data, "prompt": prompt}
 
