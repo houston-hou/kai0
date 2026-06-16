@@ -1135,7 +1135,7 @@ _CONFIGS = [
         save_interval=1000,
         keep_period=None,
         num_workers=0,
-        batch_size=16,
+        batch_size=24,
         fsdp_devices=1,
         wandb_enabled=False,
         lr_schedule=_optimizer.CosineDecaySchedule(
@@ -1146,6 +1146,59 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(),
     ),
+    TrainConfig(
+        name="beaker2cylinder",
+        model=pi0_config.Pi0Config(pi05=True, active_arm="left"),
+        data=LeRobotAlohaDataConfig(
+            repo_id=None,
+            use_multi_repo=True,
+            repo_ids=[
+        'measure_liquid_full_0605_atomic_beaker2cylinder_trimmed',
+        'measure_liquid_full_0606_atomic_beaker2cylinder_trimmed',
+        'measure_liquid_full_atomic_beaker2cylinder_trimmed'
+            ],
+            root="/mnt/hdy/emchem_pi05/training_data",
+            assets=AssetsConfig(asset_id="beaker2cylinder"),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        freeze_filter=nnx.All(
+            nnx_utils.PathRegex(r".*llm.*"),
+            nnx.Not(nnx_utils.PathRegex(r".*llm.*_1.*")),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/mnt/hdy/kai0-main/weights_cache/openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30000,
+        log_interval=50,
+        save_interval=1000,
+        keep_period=5000,
+        num_workers=64,
+        batch_size=312,
+        fsdp_devices=1,
+        wandb_enabled=False,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2e-4,
+            warmup_steps=1000,
+            decay_steps=30_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(),
+    ),
+
     #
     # Fine-tuning DROID configs.
     #

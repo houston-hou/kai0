@@ -29,6 +29,10 @@ import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
 
 
+print("device_count", jax.device_count())
+print("devices", jax.devices())
+print("process_count", jax.process_count())
+
 def init_logging():
     """Custom logging format for better readability."""
     level_mapping = {"DEBUG": "D", "INFO": "I", "WARNING": "W", "ERROR": "E", "CRITICAL": "C"}
