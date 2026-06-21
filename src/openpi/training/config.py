@@ -1095,6 +1095,51 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(),
     ),
     TrainConfig(
+        name="boil_test",
+        model=pi0_config.Pi0Config(pi05=True, active_arm="left"),
+        data=LeRobotAlohaDataConfig(
+            repo_id="/mnt/hdy/emchem_pi05/training_data/boil_0607",
+            assets=AssetsConfig(asset_id="boil_0607"),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        freeze_filter=nnx.All(
+            nnx_utils.PathRegex(r".*llm.*"),
+            nnx.Not(nnx_utils.PathRegex(r".*llm.*_1.*")),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/mnt/hdy/kai0-main/weights_cache/openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=5000,
+        log_interval=50,
+        save_interval=1000,
+        keep_period=None,
+        num_workers=0,
+        batch_size=16,
+        fsdp_devices=1,
+        wandb_enabled=False,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2e-4,
+            warmup_steps=1000,
+            decay_steps=10_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(),
+    ),
+    TrainConfig(
         name="pi05_aloha_organ_multi",
         model=pi0_config.Pi0Config(pi05=True, active_arm="left"),
         data=LeRobotAlohaDataConfig(
