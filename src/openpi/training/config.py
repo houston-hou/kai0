@@ -1153,9 +1153,9 @@ _CONFIGS = [
             repo_id=None,
             use_multi_repo=True,
             repo_ids=[
-        'measure_liquid_full_0605_atomic_beaker2cylinder_trimmed',
-        'measure_liquid_full_0606_atomic_beaker2cylinder_trimmed',
-        'measure_liquid_full_atomic_beaker2cylinder_trimmed'
+                "measure_liquid_full_0605_atomic_beaker2cylinder_trimmed",
+                "measure_liquid_full_0606_atomic_beaker2cylinder_trimmed",
+                "measure_liquid_full_atomic_beaker2cylinder_trimmed",
             ],
             root="/mnt/hdy/emchem_pi05/training_data",
             assets=AssetsConfig(asset_id="beaker2cylinder"),
