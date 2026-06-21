@@ -1,8 +1,10 @@
 from flax import nnx
 import jax
+import jax.numpy as jnp
 import pytest
 
 from openpi.models import model as _model
+from openpi.models import pi0
 from openpi.models import pi0_config
 from openpi.models import pi0_fast
 from openpi.shared import download
@@ -32,6 +34,16 @@ def test_pi0_active_arm_action_loss_mask():
     assert left_config.action_loss_mask_for_dim(14) == (True,) * 7 + (False,) * 7
     assert right_config.action_loss_mask_for_dim(14) == (False,) * 7 + (True,) * 7
     assert custom_config.action_loss_mask_for_dim(4) == (True, False, False, False)
+
+
+def test_pi0_active_arm_loss_ignores_inactive_nan_dims():
+    u_t = jnp.array([[[1.0, jnp.nan, 4.0]]])
+    v_t = jnp.array([[[3.0, jnp.nan, 1.0]]])
+
+    loss = pi0._action_loss_per_timestep(u_t, v_t, (0, 2))
+
+    assert jnp.isfinite(loss).all()
+    assert float(loss[0, 0]) == pytest.approx(((3.0 - 1.0) ** 2 + (1.0 - 4.0) ** 2) / 2)
 
 
 def test_pi0_lora_model():

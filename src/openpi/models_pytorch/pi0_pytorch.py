@@ -87,6 +87,11 @@ class PI0Pytorch(nn.Module):
         self.config = config
         self.pi05 = config.pi05
         self.action_loss_mask = config.action_loss_mask_for_dim(config.action_dim)
+        self.action_loss_indices = (
+            None
+            if self.action_loss_mask is None
+            else tuple(idx for idx, enabled in enumerate(self.action_loss_mask) if enabled)
+        )
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -185,11 +190,15 @@ class PI0Pytorch(nn.Module):
         return time.to(dtype=torch.float32, device=device)
 
     def _action_loss_per_timestep(self, u_t, v_t):
-        per_dim_loss = F.mse_loss(u_t, v_t, reduction="none")
-        if self.action_loss_mask is None:
-            return per_dim_loss.mean(dim=-1)
-        mask = torch.as_tensor(self.action_loss_mask, dtype=per_dim_loss.dtype, device=per_dim_loss.device)
-        return (per_dim_loss * mask).sum(dim=-1) / mask.sum().clamp_min(1.0)
+        diff = v_t - u_t
+        if self.action_loss_indices is None:
+            return diff.square().mean(dim=-1)
+        if not self.action_loss_indices:
+            return torch.zeros(diff.shape[:-1], dtype=diff.dtype, device=diff.device)
+
+        indices = torch.as_tensor(self.action_loss_indices, dtype=torch.long, device=diff.device)
+        active_diff = torch.index_select(diff, dim=-1, index=indices)
+        return active_diff.square().mean(dim=-1)
 
     def embed_prefix(
         self, images, img_masks, lang_tokens, lang_masks

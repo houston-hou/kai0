@@ -16,6 +16,23 @@ from openpi.shared import array_typing as at
 logger = logging.getLogger("openpi")
 
 
+def _action_loss_indices(action_loss_mask: tuple[bool, ...] | None) -> tuple[int, ...] | None:
+    if action_loss_mask is None:
+        return None
+    return tuple(idx for idx, enabled in enumerate(action_loss_mask) if enabled)
+
+
+def _action_loss_per_timestep(u_t, v_t, action_loss_indices: tuple[int, ...] | None):
+    diff = v_t - u_t
+    if action_loss_indices is None:
+        return jnp.mean(jnp.square(diff), axis=-1)
+    if not action_loss_indices:
+        return jnp.zeros(diff.shape[:-1], dtype=diff.dtype)
+
+    active_diff = jnp.take(diff, jnp.asarray(action_loss_indices, dtype=jnp.int32), axis=-1)
+    return jnp.mean(jnp.square(active_diff), axis=-1)
+
+
 def make_attn_mask(input_mask, mask_ar):
     """Adapted from big_vision.
 
@@ -68,6 +85,7 @@ class Pi0(_model.BaseModel):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
         self.action_loss_mask = config.action_loss_mask_for_dim(config.action_dim)
+        self.action_loss_indices = _action_loss_indices(self.action_loss_mask)
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -212,11 +230,7 @@ class Pi0(_model.BaseModel):
         )
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
-        per_dim_loss = jnp.square(v_t - u_t)
-        if self.action_loss_mask is None:
-            return jnp.mean(per_dim_loss, axis=-1)
-        mask = jnp.asarray(self.action_loss_mask, dtype=per_dim_loss.dtype)
-        return jnp.sum(per_dim_loss * mask, axis=-1) / jnp.maximum(jnp.sum(mask), 1.0)
+        return _action_loss_per_timestep(u_t, v_t, self.action_loss_indices)
 
     @override
     def sample_actions(
