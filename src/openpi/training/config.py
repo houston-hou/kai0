@@ -1188,6 +1188,32 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(),
     ),
     TrainConfig(
+        name="agilex_boil_rtc",
+        model=pi0_config.Pi0RTCConfig(pi05=True, active_arm="left"),
+        data=LerobotAgilexDataConfig(
+            repo_id="/mnt/hdy/emchem_pi05/training_data/boil_0607",
+            assets=AssetsConfig(asset_id="boil_0607"),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "top_head": "observation.images.cam_high",
+                                "hand_left": "observation.images.cam_left_wrist",
+                                "hand_right": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=False,
+        ),
+    ),
+    TrainConfig(
         name="pi05_aloha_organ_multi",
         model=pi0_config.Pi0Config(pi05=True, active_arm="left"),
         data=LeRobotAlohaDataConfig(
