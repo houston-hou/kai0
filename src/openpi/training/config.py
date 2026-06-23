@@ -469,7 +469,7 @@ class LerobotAgilexDataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
-            episodes=self.episodes,
+            # episodes=self.episodes,
         )
 
 @dataclasses.dataclass(frozen=True)

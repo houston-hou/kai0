@@ -11,13 +11,13 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "args": [
-                "boil_test" ,
+                "boil_test",
                 "--exp_name", "boil_test_0607", 
                 "--batch-size=16", 
-                "--num_train_steps=1000", 
-                "--log_interval=10", 
+                "--num_train_steps=5000", 
+                "--log_interval=50", 
                 "--num_workers=1", 
-                "--overwrite"
+                "--resume"
             ]
         }
     ]
