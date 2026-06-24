@@ -2,7 +2,8 @@ ffmpeg_libs
 weights_cache
 assets
 packages_
-wandb/
+wandb
+robodata_studio/work
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RoboData Studio</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="studio-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">RS</div>
+        <div>
+          <strong>RoboData Studio</strong>
+          <span>Data · Train · Infer</span>
+        </div>
+      </div>
+      <nav class="nav-list" aria-label="Main">
+        <button class="nav-item active" data-view="dashboard">Dashboard</button>
+        <button class="nav-item" data-view="datasets">Datasets</button>
+        <button class="nav-item" data-view="episode">Episode Viewer</button>
+        <button class="nav-item" data-view="editor">Data Editor</button>
+        <button class="nav-item" data-view="training">Training</button>
+        <button class="nav-item" data-view="inference">Inference</button>
+        <button class="nav-item" data-view="replay">Replay & Evaluation</button>
+        <button class="nav-item" data-view="jobs">Jobs</button>
+        <button class="nav-item" data-view="settings">Settings</button>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="viewTitle">Dashboard</h1>
+          <p id="viewSubtitle">机器人数据、训练和推理的一体化管理入口。</p>
+        </div>
+        <div class="topbar-actions">
+          <select id="globalDatasetSelect"></select>
+          <button id="refreshButton" type="button">Refresh</button>
+        </div>
+      </header>
+
+      <section id="dashboard" class="view active">
+        <div class="metric-grid">
+          <article class="metric-card">
+            <span>Datasets</span>
+            <strong id="metricDatasets">-</strong>
+          </article>
+          <article class="metric-card">
+            <span>Episodes</span>
+            <strong id="metricEpisodes">-</strong>
+          </article>
+          <article class="metric-card">
+            <span>Frames</span>
+            <strong id="metricFrames">-</strong>
+          </article>
+          <article class="metric-card">
+            <span>Videos</span>
+            <strong id="metricVideos">-</strong>
+          </article>
+        </div>
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Workspace Overview</h2>
+              <p>从 `training_data` 自动扫描 LeRobot 数据集，第一阶段先打通数据浏览和空白帧裁剪。</p>
+            </div>
+          </div>
+          <div id="dashboardDatasetList" class="compact-list"></div>
+        </div>
+      </section>
+
+      <section id="datasets" class="view">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Datasets</h2>
+              <p>管理本地 LeRobot 数据集，检查 parquet、video 和 meta 结构。</p>
+            </div>
+          </div>
+          <div class="table-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Episodes</th>
+                  <th>Frames</th>
+                  <th>Parquet</th>
+                  <th>Videos</th>
+                  <th>FPS</th>
+                </tr>
+              </thead>
+              <tbody id="datasetTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="episode" class="view">
+        <div class="workspace-grid">
+          <article class="panel controls-panel">
+            <h2>Episode Control</h2>
+            <label>
+              <span>Episode</span>
+              <select id="episodeSelect"></select>
+            </label>
+            <label>
+              <span>Feature</span>
+              <select id="featureSelect"></select>
+            </label>
+            <label>
+              <span>Row</span>
+              <input id="rowRange" type="range" min="0" max="0" value="0">
+            </label>
+            <div class="inline-actions">
+              <button id="prevRowButton" type="button">Prev</button>
+              <button id="nextRowButton" type="button">Next</button>
+              <button id="playButton" type="button">Play</button>
+            </div>
+            <div id="rowReadout" class="readout">No episode loaded</div>
+          </article>
+          <article class="panel media-panel">
+            <div class="section-head">
+              <h2>Media Streams</h2>
+              <span id="mediaStatus">-</span>
+            </div>
+            <h3>Frame Images</h3>
+            <div id="imageGrid" class="image-grid"></div>
+            <h3>Episode Videos</h3>
+            <div id="videoGrid" class="video-grid"></div>
+          </article>
+          <article class="panel chart-panel">
+            <div class="section-head">
+              <h2>Feature Curve</h2>
+              <span id="featureStatus">-</span>
+            </div>
+            <canvas id="featureCanvas" height="260"></canvas>
+          </article>
+          <article class="panel row-panel">
+            <h2>Current Row</h2>
+            <pre id="rowJson">No data</pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="editor" class="view">
+        <div class="conversion-layout">
+          <div class="panel">
+            <div class="section-head">
+              <div>
+                <h2>HDF5 to LeRobot</h2>
+                <p>Only converts raw HDF5 folders into LeRobot datasets. Editing, trimming, and atomic splitting happen downstream.</p>
+              </div>
+            </div>
+            <div class="form-grid">
+              <label>
+                <span>Raw HDF5 root</span>
+                <input id="conversionRawRootInput" type="text" placeholder="C:\path\to\raw_hdf5_root">
+              </label>
+              <label>
+                <span>Repo prefix</span>
+                <input id="conversionRepoPrefixInput" type="text" value="emchem_atomic">
+              </label>
+              <label>
+                <span>Conversion mode</span>
+                <select id="conversionSplitModeSelect">
+                  <option value="separate">Separate LeRobot repo per selected HDF5 folder</option>
+                  <option value="merged">Merged LeRobot repo from selected HDF5 folders</option>
+                </select>
+              </label>
+              <label>
+                <span>Merged repo id</span>
+                <input id="conversionMergedRepoInput" type="text" placeholder="emchem_atomic_merged">
+              </label>
+              <label>
+                <span>Output mode</span>
+                <select id="conversionOutputModeSelect">
+                  <option value="video">video</option>
+                  <option value="image">image</option>
+                </select>
+              </label>
+            </div>
+            <div class="inline-actions">
+              <button id="discoverHdf5Button" type="button">Discover HDF5 Tasks</button>
+              <button id="startConversionButton" type="button">Start Conversion Job</button>
+              <button id="refreshConversionJobsButton" type="button">Refresh Jobs</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="section-head">
+              <div>
+                <h2>HDF5 Task Selection</h2>
+                <p>Select one or more discovered HDF5 folders for conversion.</p>
+              </div>
+              <span id="conversionTaskStatus">No root scanned</span>
+            </div>
+            <div id="conversionTaskList" class="task-list"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Conversion Job</h2>
+          <pre id="conversionJobOutput">No conversion job started</pre>
+        </div>
+
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Atomic Action Split</h2>
+              <p>Split every episode in the selected dataset. Provide each atomic dataset name and prompt, then adjust return-home boundaries before export.</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <label>
+              <span>Output repo prefix</span>
+              <input id="atomicRepoPrefixInput" type="text" placeholder="selected_dataset_atomic">
+            </label>
+            <label>
+              <span>State key</span>
+              <input id="atomicStateKeyInput" type="text" value="observation.state">
+            </label>
+            <label>
+              <span>Action key</span>
+              <input id="atomicActionKeyInput" type="text" value="action">
+            </label>
+            <label>
+              <span>Joint home threshold</span>
+              <input id="atomicJointThresholdInput" type="number" step="0.001" value="0.035">
+            </label>
+            <label>
+              <span>Boundary search radius</span>
+              <input id="atomicSearchRadiusInput" type="number" min="1" value="80">
+            </label>
+            <label>
+              <span>Min boundary gap</span>
+              <input id="atomicMinGapInput" type="number" min="1" value="20">
+            </label>
+            <label>
+              <span>Video keys</span>
+              <input id="atomicVideoKeysInput" type="text" placeholder="auto, or observation.images.cam_high,...">
+            </label>
+          </div>
+          <div class="check-grid">
+            <label><input id="atomicSplitVideosInput" type="checkbox" checked> Split videos</label>
+          </div>
+          <label class="wide-label">
+            <span>Atomic dataset name and prompt, one per action</span>
+            <textarea id="atomicPromptsInput" rows="5" spellcheck="false" placeholder="pick_beaker | pick up the beaker&#10;pour_water | pour water into the cup&#10;place_beaker | place the beaker back"></textarea>
+          </label>
+          <div class="inline-actions">
+            <button id="suggestAtomicButton" type="button">Suggest Boundaries</button>
+            <button id="startAtomicSplitButton" type="button">Generate Atomic Datasets</button>
+          </div>
+          <div id="atomicKeyframeList" class="keyframe-list"></div>
+          <label class="wide-label">
+            <span>Manual labels JSON</span>
+            <textarea id="atomicLabelsInput" rows="12" spellcheck="false" placeholder='{"segments":[{"label":"pick_beaker","episode_index":0,"start":0,"end":120,"task":"pick up the beaker"}]}'></textarea>
+          </label>
+          <pre id="atomicSplitOutput">No atomic split job started</pre>
+        </div>
+
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Trim Idle Edges</h2>
+              <p>调用 `scripts/trim_idle_edges_dataset.py` 裁掉采集前后的空白帧，并同步裁剪 video 文件。</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <label>
+              <span>Output dataset</span>
+              <input id="trimOutputInput" type="text" placeholder="source_dataset_trimmed">
+            </label>
+            <label>
+              <span>Action key</span>
+              <input id="trimActionKeyInput" type="text" value="action">
+            </label>
+            <label>
+              <span>State key</span>
+              <input id="trimStateKeyInput" type="text" value="observation.state">
+            </label>
+            <label>
+              <span>Action idle threshold</span>
+              <input id="trimActionThresholdInput" type="number" step="0.001" value="0.01">
+            </label>
+            <label>
+              <span>State idle threshold</span>
+              <input id="trimStateThresholdInput" type="number" step="0.001" value="0.002">
+            </label>
+            <label>
+              <span>Min edge idle frames</span>
+              <input id="trimMinEdgeInput" type="number" min="1" value="5">
+            </label>
+            <label>
+              <span>Keep edge idle frames</span>
+              <input id="trimKeepEdgeInput" type="number" min="0" value="0">
+            </label>
+            <label>
+              <span>Workers</span>
+              <input id="trimWorkersInput" type="number" min="1" value="1">
+            </label>
+            <label>
+              <span>Video keys</span>
+              <input id="trimVideoKeysInput" type="text" placeholder="自动检测，或 observation.images.cam_high,...">
+            </label>
+          </div>
+          <div class="check-grid">
+            <label><input id="trimDryRunInput" type="checkbox" checked> Dry run first</label>
+            <label><input id="trimVideosInput" type="checkbox" checked> Trim videos</label>
+            <label><input id="trimStateIdleInput" type="checkbox"> Also require state idle</label>
+            <label><input id="trimOverwriteInput" type="checkbox"> Overwrite output</label>
+          </div>
+          <div class="inline-actions">
+            <button id="startTrimButton" type="button">Start Trim Job</button>
+            <button id="refreshJobsButton" type="button">Refresh Jobs</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>Latest Job</h2>
+          <pre id="latestJobOutput">No job started</pre>
+        </div>
+        <div class="panel">
+          <div class="section-head">
+            <h2>Trim Report</h2>
+            <span id="trimReportStatus">No report loaded</span>
+          </div>
+          <div id="trimSummaryGrid" class="metric-grid small-metrics"></div>
+          <pre id="trimReportOutput">Run a dry-run trim job to generate a report.</pre>
+        </div>
+      </section>
+
+      <section id="training" class="view">
+        <div class="panel command-panel">
+          <h2>Training Command Preview</h2>
+          <div class="form-grid">
+            <label><span>Config</span><input id="trainConfigInput" type="text" value="pi05_base_aloha_measure_liquid_full"></label>
+            <label><span>Train steps</span><input id="trainStepsInput" type="number" value="30000"></label>
+          </div>
+          <button id="previewTrainButton" type="button">Preview Command</button>
+          <pre id="trainCommandOutput">Training launcher will be connected in the next phase.</pre>
+        </div>
+      </section>
+
+      <section id="inference" class="view">
+        <div class="panel command-panel">
+          <h2>Inference Command Preview</h2>
+          <div class="form-grid">
+            <label><span>Policy config</span><input id="inferConfigInput" type="text" value="pi05_base_aloha_measure_liquid_full"></label>
+            <label><span>Checkpoint dir</span><input id="inferCheckpointInput" type="text" placeholder="checkpoints/.../step"></label>
+            <label><span>Port</span><input id="inferPortInput" type="number" value="8001"></label>
+          </div>
+          <button id="previewInferButton" type="button">Preview Command</button>
+          <pre id="inferCommandOutput">Inference service control will be connected in the next phase.</pre>
+        </div>
+      </section>
+
+      <section id="replay" class="view">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Replay & Evaluation</h2>
+              <p>Load a replay parquet dataset with action, expert.action, action.error and timing fields.</p>
+            </div>
+            <div class="compare-controls">
+              <select id="replayEpisodeSelect"></select>
+              <select id="replayDimSelect"></select>
+            </div>
+          </div>
+          <div id="replayStats" class="metric-grid small-metrics"></div>
+          <div class="chart-shell">
+            <canvas id="replayCanvas" height="300"></canvas>
+          </div>
+          <div class="table-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th>Dim</th>
+                  <th>Action</th>
+                  <th>Expert</th>
+                  <th>Error</th>
+                  <th>Abs Error</th>
+                </tr>
+              </thead>
+              <tbody id="replayDiffBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Trajectory Compare</h2>
+              <p>Overlay the selected feature from the current dataset and a second local dataset.</p>
+            </div>
+            <div class="compare-controls">
+              <select id="compareDatasetSelect"></select>
+              <select id="compareEpisodeSelect"></select>
+              <select id="compareFeatureSelect"></select>
+              <button id="loadCompareButton" type="button">Load Compare</button>
+              <button id="clearCompareButton" type="button">Clear</button>
+            </div>
+          </div>
+          <div id="compareStats" class="metric-grid small-metrics"></div>
+          <div class="chart-shell">
+            <canvas id="compareCanvas" height="300"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section id="jobs" class="view">
+        <div class="panel">
+          <div class="section-head">
+            <h2>Jobs</h2>
+            <button id="jobsRefreshButton" type="button">Refresh</button>
+          </div>
+          <div id="jobsList" class="compact-list"></div>
+        </div>
+      </section>
+
+      <section id="settings" class="view">
+        <div class="panel">
+          <h2>Settings</h2>
+          <div class="settings-grid">
+            <div><span>Training data root</span><strong>training_data</strong></div>
+            <div><span>Studio port</span><strong>8091</strong></div>
+            <div><span>Trim script</span><strong>scripts/trim_idle_edges_dataset.py</strong></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="./app.js"></script>
+</body>
+</html>
