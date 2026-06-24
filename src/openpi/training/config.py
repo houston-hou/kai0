@@ -1140,11 +1140,18 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(),
     ),
     TrainConfig(
-        name="boil_test_agilex",
+        name="liquid_agilex",
         model=pi0_config.Pi0Config(pi05=True, active_arm="left"),
         data=LerobotAgilexDataConfig(
-            repo_id="/mnt/hdy/emchem_pi05/training_data/boil_0607",
-            assets=AssetsConfig(asset_id="boil_0607"),
+            repo_id=None,
+            use_multi_repo=True,
+            repo_ids=[
+                "measure_liquid_full_0604",
+                "measure_liquid_full_0605",
+                "measure_liquid_full_0606",
+            ],
+            root="/mnt/hdy/organ_data_le",
+            assets=AssetsConfig(asset_id="organ_data_le"),
             repack_transforms=_transforms.Group(
                 inputs=[
                     _transforms.RepackTransform(
@@ -1171,7 +1178,7 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "/mnt/hdy/kai0-main/weights_cache/openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=5000,
+        num_train_steps=100,
         log_interval=50,
         save_interval=1000,
         keep_period=None,
