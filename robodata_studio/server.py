@@ -19,7 +19,7 @@ from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 STUDIO_DIR = Path(__file__).resolve().parent
 ROOT_DIR = STUDIO_DIR.parent
-TRAINING_DATA_ROOT = ROOT_DIR / "training_data"
+TRAINING_DATA_ROOT = STUDIO_DIR.parent.parent / "organ_data_le"
 CHECKPOINTS_ROOT = ROOT_DIR / "checkpoints"
 TRIM_SCRIPT = ROOT_DIR / "scripts" / "trim_idle_edges_dataset.py"
 ATOMIC_SPLIT_SCRIPT = ROOT_DIR / "scripts" / "split_lerobot_atomic_actions.py"
