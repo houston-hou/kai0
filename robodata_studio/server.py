@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import math
 import os
-import base64
 from pathlib import Path
 import shutil
 import subprocess
@@ -29,6 +30,8 @@ MERGED_CONVERTER = ROOT_DIR / "examples" / "aloha_real" / "convert_aloha_data_to
 app = Flask(__name__, static_folder=None)
 _jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
+_dataset_roots: dict[str, Path] = {}
+_dataset_roots_lock = threading.Lock()
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -95,16 +98,66 @@ def feature_keys(info: dict[str, Any], dtype: str | None = None, numeric: bool =
     return sorted(output)
 
 
+def dataset_id_for_path(root: Path) -> str:
+    default_root = TRAINING_DATA_ROOT.resolve()
+    if root.parent == default_root and "/" not in root.name and "\\" not in root.name:
+        return root.name
+    digest = hashlib.sha256(os.path.normcase(str(root)).encode("utf-8")).hexdigest()[:16]
+    return f"external-{digest}"
+
+
+def register_dataset_path(path_text: str) -> tuple[str, Path]:
+    root = safe_external_dir(path_text)
+    if not (root / "meta" / "info.json").is_file():
+        raise FileNotFoundError(f"Not a LeRobot dataset (missing meta/info.json): {root}")
+    dataset_id = dataset_id_for_path(root)
+    with _dataset_roots_lock:
+        _dataset_roots[dataset_id] = root
+    return dataset_id, root
+
+
+def discover_default_datasets() -> None:
+    if not TRAINING_DATA_ROOT.exists():
+        return
+    for path in TRAINING_DATA_ROOT.iterdir():
+        if path.is_dir() and (path / "meta" / "info.json").is_file():
+            dataset_id = dataset_id_for_path(path.resolve())
+            with _dataset_roots_lock:
+                _dataset_roots[dataset_id] = path.resolve()
+
+
 def dataset_root(dataset_id: str) -> Path:
     if "/" in dataset_id or "\\" in dataset_id or dataset_id in {"", ".", ".."}:
         abort(400, description="Invalid dataset id")
-    root = (TRAINING_DATA_ROOT / dataset_id).resolve()
-    allowed_root = TRAINING_DATA_ROOT.resolve()
-    if root != allowed_root and allowed_root not in root.parents:
-        abort(400, description="Invalid dataset path")
+    discover_default_datasets()
+    with _dataset_roots_lock:
+        root = _dataset_roots.get(dataset_id)
+    if root is None:
+        abort(404, description=f"Dataset not registered: {dataset_id}")
     if not (root / "meta" / "info.json").exists():
         abort(404, description=f"Dataset not found: {dataset_id}")
     return root
+
+
+def display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT_DIR)).replace("\\", "/")
+    except ValueError:
+        return str(path)
+
+
+def output_dataset_path(source_root: Path, value: str, default_name: str) -> Path:
+    text = value.strip() or default_name
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        if "/" in text or "\\" in text:
+            path = ROOT_DIR / path
+        else:
+            path = source_root.parent / text
+    resolved = path.resolve()
+    if resolved == source_root:
+        abort(400, description="Output dataset must differ from the source dataset")
+    return resolved
 
 
 def make_episode_name(index: int) -> str:
@@ -219,8 +272,8 @@ def dataset_summary(dataset_id: str) -> dict[str, Any]:
     video_count = len(list((root / "videos").rglob("*.mp4"))) if (root / "videos").exists() else 0
     return {
         "id": dataset_id,
-        "label": dataset_id,
-        "root": str(root.relative_to(ROOT_DIR)).replace("\\", "/"),
+        "label": root.name,
+        "root": display_path(root),
         "absoluteRoot": str(root),
         "fps": info.get("fps"),
         "totalEpisodes": info.get("total_episodes", len(episodes)),
@@ -237,13 +290,10 @@ def dataset_summary(dataset_id: str) -> dict[str, Any]:
 
 
 def list_datasets() -> list[dict[str, Any]]:
-    if not TRAINING_DATA_ROOT.exists():
-        return []
-    output = []
-    for path in sorted(item for item in TRAINING_DATA_ROOT.iterdir() if item.is_dir()):
-        if (path / "meta" / "info.json").exists():
-            output.append(dataset_summary(path.name))
-    return output
+    discover_default_datasets()
+    with _dataset_roots_lock:
+        dataset_ids = sorted(_dataset_roots, key=lambda item: (_dataset_roots[item].name.lower(), str(_dataset_roots[item])))
+    return [dataset_summary(dataset_id) for dataset_id in dataset_ids]
 
 
 def create_job(kind: str, payload: dict[str, Any]) -> str:
@@ -294,6 +344,8 @@ def run_trim_job(job_id: str, command: list[str]) -> None:
             job = _jobs.get(job_id)
         if job:
             update_job(job_id, report=load_trim_report(job))
+            if completed.returncode == 0 and not (job.get("payload") or {}).get("dryRun", True):
+                register_dataset_path(str((job.get("payload") or {})["outputRoot"]))
     except Exception as exc:
         update_job(
             job_id,
@@ -645,7 +697,8 @@ def run_atomic_split_job(job_id: str) -> None:
         if not labels_text:
             raise ValueError("labelsJson is required")
         source_root = dataset_root(dataset_id)
-        repo_prefix = str(payload.get("repoPrefix") or f"{dataset_id}_atomic").strip()
+        repo_prefix = repo_component(str(payload.get("repoPrefix") or f"{dataset_id}_atomic"))
+        output_root = safe_external_dir(str(payload.get("outputRoot") or source_root.parent))
 
         work_root = STUDIO_DIR / "work" / job_id
         if work_root.exists():
@@ -662,7 +715,7 @@ def run_atomic_split_job(job_id: str) -> None:
             "--labels-json",
             str(labels_path),
             "--output-root",
-            str(TRAINING_DATA_ROOT),
+            str(output_root),
             "--repo-prefix",
             repo_prefix,
             "--overwrite",
@@ -671,8 +724,15 @@ def run_atomic_split_job(job_id: str) -> None:
             command.append("--no-split-videos")
         if payload.get("videoKeys"):
             command.extend(["--video-keys", str(payload["videoKeys"])])
+        if payload.get("losslessVideos", True):
+            command.append("--lossless-video")
         code = run_command_for_job(job_id, command)
-        summary = load_json(TRAINING_DATA_ROOT / f"{repo_prefix}_atomic_split_summary.json", {})
+        summary = load_json(output_root / f"{repo_prefix}_atomic_split_summary.json", {})
+        if code == 0:
+            for item in summary.get("datasets", []):
+                dataset_name = str(item.get("dataset") or "").strip()
+                if dataset_name:
+                    register_dataset_path(str(output_root / dataset_name))
         update_job(
             job_id,
             status="succeeded" if code == 0 else "failed",
@@ -680,6 +740,7 @@ def run_atomic_split_job(job_id: str) -> None:
             returnCode=code,
             report=summary,
             outputRepos=[str(item["dataset"]) for item in summary.get("datasets", []) if item.get("dataset")],
+            outputRoot=str(output_root),
         )
     except Exception as exc:
         append_job_error(job_id, f"\n{exc}\n{traceback.format_exc()}")
@@ -706,6 +767,19 @@ def root_assets() -> Response:
 @app.get("/api/datasets")
 def api_datasets() -> Response:
     return jsonify({"datasets": list_datasets()})
+
+
+@app.post("/api/datasets/register")
+def api_register_dataset() -> Response:
+    payload = request.get_json(force=True, silent=False) or {}
+    path_text = str(payload.get("path") or "").strip()
+    if not path_text:
+        abort(400, description="path is required")
+    try:
+        dataset_id, _ = register_dataset_path(path_text)
+    except Exception as exc:
+        abort(400, description=str(exc))
+    return jsonify({"dataset": dataset_summary(dataset_id)})
 
 
 @app.get("/api/datasets/<dataset_id>/summary")
@@ -777,7 +851,7 @@ def api_episode_media(dataset_id: str, episode_name: str) -> Response:
             {
                 "key": key,
                 "exists": path.exists(),
-                "path": str(path.relative_to(ROOT_DIR)).replace("\\", "/") if path.exists() else "",
+                "path": display_path(path) if path.exists() else "",
                 "url": f"/api/datasets/{dataset_id}/episode/{normalized_episode}/video/{key}",
             }
         )
@@ -845,12 +919,8 @@ def api_trim_idle() -> Response:
     payload = request.get_json(force=True, silent=False) or {}
     dataset_id = str(payload.get("datasetId") or "").strip()
     source_root = dataset_root(dataset_id)
-    output_name = str(payload.get("outputDataset") or f"{dataset_id}_trimmed").strip()
-    if "/" in output_name or "\\" in output_name or output_name in {"", ".", ".."}:
-        abort(400, description="Invalid output dataset name")
-    output_root = (TRAINING_DATA_ROOT / output_name).resolve()
-    if TRAINING_DATA_ROOT.resolve() not in output_root.parents:
-        abort(400, description="Invalid output dataset path")
+    output_value = str(payload.get("outputDataset") or "").strip()
+    output_root = output_dataset_path(source_root, output_value, f"{source_root.name}_trimmed")
 
     command = [
         sys.executable,
@@ -888,6 +958,8 @@ def api_trim_idle() -> Response:
         command.append("--no-trim-videos")
     if payload.get("videoKeys"):
         command.extend(["--video-keys", str(payload["videoKeys"])])
+    if payload.get("losslessVideos", True):
+        command.append("--lossless-video")
     if payload.get("maxEpisodes"):
         command.extend(["--max-episodes", str(int(payload["maxEpisodes"]))])
 

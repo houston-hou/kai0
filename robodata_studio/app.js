@@ -30,6 +30,7 @@ let compareSeries = null;
 let compareEpisodeName = null;
 let compareFeature = null;
 let conversionTasks = [];
+let atomicSegments = [];
 
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
@@ -93,6 +94,15 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function savedDatasetPaths() {
+  try {
+    const value = JSON.parse(localStorage.getItem("robodataDatasetPaths") || "[]");
+    return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 function setView(viewId) {
   $$(".view").forEach((view) => view.classList.toggle("active", view.id === viewId));
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === viewId));
@@ -128,9 +138,13 @@ function renderDatasetOptions() {
     selectedDataset = datasets[0];
   }
   select.value = selectedDataset.id;
-  $("#trimOutputInput").placeholder = `${selectedDataset.id}_trimmed`;
+  $("#trimOutputInput").placeholder = `${selectedDataset.absoluteRoot}_trimmed`;
   const atomicPrefix = $("#atomicRepoPrefixInput");
-  if (atomicPrefix) atomicPrefix.placeholder = `${selectedDataset.id}_atomic`;
+  if (atomicPrefix) atomicPrefix.placeholder = `${selectedDataset.label}_atomic`;
+  const atomicOutputRoot = $("#atomicOutputRootInput");
+  if (atomicOutputRoot && !atomicOutputRoot.value) {
+    atomicOutputRoot.placeholder = selectedDataset.absoluteRoot.replace(/[\\/][^\\/]+$/, "");
+  }
 }
 
 function renderDashboard() {
@@ -188,6 +202,7 @@ function renderDatasetTable() {
 
 function renderFeatureOptions(keys) {
   const select = $("#featureSelect");
+  const previous = currentFeature;
   select.innerHTML = "";
   keys.forEach((key) => {
     const option = document.createElement("option");
@@ -195,7 +210,23 @@ function renderFeatureOptions(keys) {
     option.textContent = key;
     select.appendChild(option);
   });
-  currentFeature = keys.includes("action") ? "action" : keys[0] || null;
+  if (keys.includes("action")) {
+    [
+      ["action::left", "action left"],
+      ["action::right", "action right"],
+    ].forEach(([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.appendChild(option);
+    });
+  }
+  const available = Array.from(select.options).map((option) => option.value);
+  currentFeature = available.includes(previous)
+    ? previous
+    : available.includes("action::left")
+      ? "action::left"
+      : keys[0] || null;
   select.value = currentFeature || "";
 }
 
@@ -305,6 +336,13 @@ function renderCurrentRow() {
 
 function currentFeatureSeries() {
   if (!currentSeries || !currentFeature) return [];
+  if (currentFeature === "action::left" || currentFeature === "action::right") {
+    const rows = currentSeries.featureData?.action || [];
+    return rows.map((row) => {
+      const midpoint = Math.ceil((row?.length || 0) / 2);
+      return currentFeature === "action::left" ? row.slice(0, midpoint) : row.slice(midpoint);
+    });
+  }
   return currentSeries.featureData?.[currentFeature] || [];
 }
 
@@ -329,7 +367,7 @@ function drawFeatureCanvas() {
     return;
   }
 
-  const dims = Math.min(rows[0]?.length || 1, 6);
+  const dims = Math.min(rows[0]?.length || 1, 7);
   const values = [];
   for (let dim = 0; dim < dims; dim += 1) {
     rows.forEach((row) => values.push(Number(row?.[dim])));
@@ -341,7 +379,7 @@ function drawFeatureCanvas() {
   const pad = 24;
   const x = (index) => pad + (index / Math.max(rows.length - 1, 1)) * (width - pad * 2);
   const y = (value) => height - pad - ((value - min) / span) * (height - pad * 2);
-  const colors = ["#0f766e", "#2563eb", "#dc2626", "#7c3aed", "#b45309", "#0891b2"];
+  const colors = ["#0f766e", "#2563eb", "#dc2626", "#7c3aed", "#b45309", "#0891b2", "#475569"];
 
   ctx.strokeStyle = "#dbe4e1";
   ctx.beginPath();
@@ -673,9 +711,12 @@ function togglePlayback() {
   }, 100);
 }
 
-async function loadCatalog() {
+async function loadCatalog(preferredDatasetId = null) {
   const payload = await fetchJson("/api/datasets");
   datasets = payload.datasets || [];
+  if (preferredDatasetId) {
+    selectedDataset = datasets.find((dataset) => dataset.id === preferredDatasetId) || selectedDataset;
+  }
   renderDatasetOptions();
   renderDashboard();
   renderDatasetTable();
@@ -691,7 +732,7 @@ function trimPayload() {
   if (!selectedDataset) throw new Error("No dataset selected");
   return {
     datasetId: selectedDataset.id,
-    outputDataset: $("#trimOutputInput").value.trim() || `${selectedDataset.id}_trimmed`,
+    outputDataset: $("#trimOutputInput").value.trim() || `${selectedDataset.label}_trimmed`,
     actionKey: $("#trimActionKeyInput").value.trim() || "action",
     stateKey: $("#trimStateKeyInput").value.trim() || "observation.state",
     actionIdleThreshold: Number($("#trimActionThresholdInput").value) || 0.01,
@@ -702,6 +743,7 @@ function trimPayload() {
     videoKeys: $("#trimVideoKeysInput").value.trim(),
     dryRun: $("#trimDryRunInput").checked,
     trimVideos: $("#trimVideosInput").checked,
+    losslessVideos: $("#trimLosslessVideosInput").checked,
     alsoRequireStateIdle: $("#trimStateIdleInput").checked,
     overwrite: $("#trimOverwriteInput").checked,
   };
@@ -842,6 +884,59 @@ function renderAtomicCandidates(payload) {
   `).join("");
 }
 
+function syncAtomicLabels() {
+  $("#atomicLabelsInput").value = JSON.stringify({ segments: atomicSegments }, null, 2);
+}
+
+function renderAtomicSegmentEditor() {
+  const container = $("#atomicSegmentEditor");
+  if (!container) return;
+  if (!atomicSegments.length) {
+    container.innerHTML = "<p>Suggested segments will appear here for frame-level correction.</p>";
+    return;
+  }
+  container.innerHTML = `
+    <div class="table-shell">
+      <table class="segment-table">
+        <thead>
+          <tr><th>Episode</th><th>Subtask</th><th>Start</th><th>End (exclusive)</th><th>Frames</th><th>Prompt</th></tr>
+        </thead>
+        <tbody>
+          ${atomicSegments.map((segment, index) => `
+            <tr>
+              <td>${segment.episode_index}</td>
+              <td>${escapeHtml(segment.label)}</td>
+              <td><input type="number" min="0" data-segment-index="${index}" data-field="start" value="${segment.start}"></td>
+              <td><input type="number" min="1" data-segment-index="${index}" data-field="end" value="${segment.end}"></td>
+              <td>${Math.max(Number(segment.end) - Number(segment.start), 0)}</td>
+              <td>${escapeHtml(segment.task)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function updateAtomicSegment(event) {
+  const input = event.target.closest("input[data-segment-index]");
+  if (!input) return;
+  const index = Number(input.dataset.segmentIndex);
+  const field = input.dataset.field;
+  const value = Math.max(Number(input.value) || 0, 0);
+  const segment = atomicSegments[index];
+  if (!segment || !["start", "end"].includes(field)) return;
+  segment[field] = value;
+  if (field === "end" && atomicSegments[index + 1]?.episode_index === segment.episode_index) {
+    atomicSegments[index + 1].start = value;
+  }
+  if (field === "start" && atomicSegments[index - 1]?.episode_index === segment.episode_index) {
+    atomicSegments[index - 1].end = value;
+  }
+  syncAtomicLabels();
+  renderAtomicSegmentEditor();
+}
+
 async function suggestAtomicKeyframes() {
   try {
     const payload = await fetchJson("/api/editor/suggest-keyframes", {
@@ -849,8 +944,10 @@ async function suggestAtomicKeyframes() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(atomicPayloadBase()),
     });
-    $("#atomicLabelsInput").value = payload.labelsJson || "";
+    atomicSegments = payload.segments || [];
+    syncAtomicLabels();
     renderAtomicCandidates(payload);
+    renderAtomicSegmentEditor();
     $("#atomicSplitOutput").textContent = JSON.stringify(payload, null, 2);
   } catch (error) {
     $("#atomicSplitOutput").textContent = error.message;
@@ -867,8 +964,10 @@ async function startAtomicSplitJob() {
       body: JSON.stringify({
         datasetId: selectedDataset?.id,
         labelsJson,
-        repoPrefix: $("#atomicRepoPrefixInput").value.trim() || `${selectedDataset.id}_atomic`,
+        repoPrefix: $("#atomicRepoPrefixInput").value.trim() || `${selectedDataset.label}_atomic`,
+        outputRoot: $("#atomicOutputRootInput").value.trim() || selectedDataset?.absoluteRoot?.replace(/[\\/][^\\/]+$/, ""),
         splitVideos: $("#atomicSplitVideosInput").checked,
+        losslessVideos: $("#atomicLosslessVideosInput").checked,
         videoKeys: $("#atomicVideoKeysInput").value.trim(),
       }),
     });
@@ -877,6 +976,34 @@ async function startAtomicSplitJob() {
   } catch (error) {
     $("#atomicSplitOutput").textContent = error.message;
   }
+}
+
+async function addDatasetPath() {
+  const path = $("#datasetPathInput").value.trim();
+  if (!path) return;
+  try {
+    const payload = await fetchJson("/api/datasets/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    const saved = savedDatasetPaths();
+    localStorage.setItem("robodataDatasetPaths", JSON.stringify(Array.from(new Set([...saved, path]))));
+    $("#datasetPathInput").value = "";
+    await loadCatalog(payload.dataset.id);
+  } catch (error) {
+    $("#datasetPathInput").value = path;
+    $("#dashboardDatasetList").textContent = error.message;
+  }
+}
+
+async function restoreDatasetPaths() {
+  const saved = savedDatasetPaths();
+  await Promise.all(saved.map((path) => fetchJson("/api/datasets/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  }).catch(() => null)));
 }
 
 async function renderTrimReport(job) {
@@ -976,9 +1103,13 @@ async function previewInference() {
 
 $$(".nav-item").forEach((item) => item.addEventListener("click", () => setView(item.dataset.view)));
 $("#refreshButton").addEventListener("click", loadCatalog);
+$("#addDatasetButton").addEventListener("click", addDatasetPath);
+$("#datasetPathInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") addDatasetPath();
+});
 $("#globalDatasetSelect").addEventListener("change", async (event) => {
   selectedDataset = datasets.find((dataset) => dataset.id === event.target.value) || null;
-  $("#trimOutputInput").placeholder = selectedDataset ? `${selectedDataset.id}_trimmed` : "";
+  $("#trimOutputInput").placeholder = selectedDataset ? `${selectedDataset.absoluteRoot}_trimmed` : "";
   await loadDatasetDetails();
 });
 $("#episodeSelect").addEventListener("change", (event) => loadEpisode(event.target.value));
@@ -1006,6 +1137,15 @@ $("#refreshConversionJobsButton").addEventListener("click", loadJobs);
 $("#conversionSplitModeSelect").addEventListener("change", updateConversionControls);
 $("#suggestAtomicButton").addEventListener("click", suggestAtomicKeyframes);
 $("#startAtomicSplitButton").addEventListener("click", startAtomicSplitJob);
+$("#atomicSegmentEditor").addEventListener("change", updateAtomicSegment);
+$("#atomicLabelsInput").addEventListener("change", () => {
+  try {
+    atomicSegments = JSON.parse($("#atomicLabelsInput").value || "{}").segments || [];
+    renderAtomicSegmentEditor();
+  } catch (error) {
+    $("#atomicSplitOutput").textContent = `Invalid labels JSON: ${error.message}`;
+  }
+});
 $("#previewTrainButton").addEventListener("click", previewTraining);
 $("#previewInferButton").addEventListener("click", previewInference);
 $("#replayEpisodeSelect").addEventListener("change", (event) => loadEpisode(event.target.value));
@@ -1031,8 +1171,9 @@ window.addEventListener("resize", () => {
 });
 window.addEventListener("beforeunload", stopPlayback);
 
-loadCatalog().catch((error) => {
+restoreDatasetPaths().then(() => loadCatalog()).catch((error) => {
   $("#dashboardDatasetList").textContent = error.message;
 });
 updateConversionControls();
 renderConversionTasks();
+renderAtomicSegmentEditor();

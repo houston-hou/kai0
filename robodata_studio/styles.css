@@ -190,7 +190,7 @@ tr.selected-row td {
 
 .topbar-actions {
   display: grid;
-  grid-template-columns: minmax(260px, 360px) auto;
+  grid-template-columns: minmax(320px, 1fr) auto minmax(220px, 320px) auto;
   gap: 10px;
 }
 
@@ -502,6 +502,20 @@ tr.selected-row td {
 }
 
 .keyframe-row span {
+  color: var(--muted);
+}
+
+.segment-editor {
+  margin: 14px 0;
+  overflow: auto;
+}
+
+.segment-table input {
+  min-width: 90px;
+}
+
+.segment-table td:first-child,
+.segment-table td:nth-child(2) {
   color: var(--muted);
 }
 

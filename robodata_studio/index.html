@@ -36,6 +36,8 @@
           <p id="viewSubtitle">机器人数据、训练和推理的一体化管理入口。</p>
         </div>
         <div class="topbar-actions">
+          <input id="datasetPathInput" type="text" placeholder="/absolute/path/to/lerobot_dataset">
+          <button id="addDatasetButton" type="button">Add Dataset</button>
           <select id="globalDatasetSelect"></select>
           <button id="refreshButton" type="button">Refresh</button>
         </div>
@@ -218,6 +220,10 @@
               <input id="atomicRepoPrefixInput" type="text" placeholder="selected_dataset_atomic">
             </label>
             <label>
+              <span>Output root directory</span>
+              <input id="atomicOutputRootInput" type="text" placeholder="/path/to/output_parent">
+            </label>
+            <label>
               <span>State key</span>
               <input id="atomicStateKeyInput" type="text" value="observation.state">
             </label>
@@ -244,6 +250,7 @@
           </div>
           <div class="check-grid">
             <label><input id="atomicSplitVideosInput" type="checkbox" checked> Split videos</label>
+            <label><input id="atomicLosslessVideosInput" type="checkbox" checked> Lossless video</label>
           </div>
           <label class="wide-label">
             <span>Atomic dataset name and prompt, one per action</span>
@@ -254,6 +261,7 @@
             <button id="startAtomicSplitButton" type="button">Generate Atomic Datasets</button>
           </div>
           <div id="atomicKeyframeList" class="keyframe-list"></div>
+          <div id="atomicSegmentEditor" class="segment-editor"></div>
           <label class="wide-label">
             <span>Manual labels JSON</span>
             <textarea id="atomicLabelsInput" rows="12" spellcheck="false" placeholder='{"segments":[{"label":"pick_beaker","episode_index":0,"start":0,"end":120,"task":"pick up the beaker"}]}'></textarea>
@@ -270,8 +278,8 @@
           </div>
           <div class="form-grid">
             <label>
-              <span>Output dataset</span>
-              <input id="trimOutputInput" type="text" placeholder="source_dataset_trimmed">
+              <span>Output dataset path or name</span>
+              <input id="trimOutputInput" type="text" placeholder="/path/to/source_dataset_trimmed">
             </label>
             <label>
               <span>Action key</span>
@@ -309,6 +317,7 @@
           <div class="check-grid">
             <label><input id="trimDryRunInput" type="checkbox" checked> Dry run first</label>
             <label><input id="trimVideosInput" type="checkbox" checked> Trim videos</label>
+            <label><input id="trimLosslessVideosInput" type="checkbox" checked> Lossless video</label>
             <label><input id="trimStateIdleInput" type="checkbox"> Also require state idle</label>
             <label><input id="trimOverwriteInput" type="checkbox"> Overwrite output</label>
           </div>

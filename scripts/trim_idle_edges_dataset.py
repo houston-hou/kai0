@@ -40,6 +40,20 @@ import subprocess
 import sys
 from typing import Any
 
+
+def _ensure_numpy_fallback_path() -> None:
+    pkgs_dir = Path(sys.prefix) / "pkgs"
+    if not pkgs_dir.exists():
+        return
+    candidates = sorted(pkgs_dir.glob("numpy-base-*/Lib/site-packages"), reverse=True)
+    for candidate in candidates:
+        if (candidate / "numpy" / "lib").exists() and str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
+            return
+
+
+_ensure_numpy_fallback_path()
+
 import numpy as np
 
 
@@ -67,6 +81,7 @@ class Args:
     ffmpeg: str = "ffmpeg"
     video_crf: int = 23
     video_preset: str = "fast"
+    lossless_video: bool = False
     workers: int = 1
 
 
@@ -98,13 +113,7 @@ def _import_pyarrow():
         import pyarrow as pa  # type: ignore
         import pyarrow.parquet as pq  # type: ignore
     except Exception:
-        pkgs_dir = Path(sys.prefix) / "pkgs"
-        if pkgs_dir.exists():
-            candidates = sorted(pkgs_dir.glob("numpy-base-*/Lib/site-packages"), reverse=True)
-            for candidate in candidates:
-                if (candidate / "numpy" / "lib").exists() and str(candidate) not in sys.path:
-                    sys.path.insert(0, str(candidate))
-                    break
+        _ensure_numpy_fallback_path()
         import pyarrow as pa  # type: ignore
         import pyarrow.parquet as pq  # type: ignore
     return pa, pq
@@ -366,7 +375,6 @@ def _trim_video(
     trim_start: int,
     trim_end: int,
     original_length: int,
-    fps: float,
     args: Args,
 ) -> None:
     if not source_video.exists():
@@ -385,19 +393,21 @@ def _trim_video(
         str(source_video),
         "-vf",
         vf,
-        "-r",
-        f"{fps:g}",
+        "-frames:v",
+        str(trim_end - trim_start),
         "-an",
         "-c:v",
         "libx264",
-        "-crf",
-        str(args.video_crf),
         "-preset",
         args.video_preset,
         "-pix_fmt",
         "yuv420p",
-        str(output_video),
     ]
+    if args.lossless_video:
+        cmd.extend(["-qp", "0"])
+    else:
+        cmd.extend(["-crf", str(args.video_crf)])
+    cmd.extend(["-movflags", "+faststart", str(output_video)])
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(
@@ -405,6 +415,23 @@ def _trim_video(
             f"command: {' '.join(cmd)}\n"
             f"stderr: {result.stderr[-2000:]}"
         )
+
+
+def _verify_preserved_data(source_slice: Any, written_table: Any, output_path: Path, reset_timestamps: bool) -> None:
+    rewritten = {"episode_index", "frame_index", "index"}
+    if reset_timestamps:
+        rewritten.add("timestamp")
+    preserved_columns = [name for name in source_slice.column_names if name not in rewritten]
+    if not preserved_columns:
+        return
+    expected = source_slice.select(preserved_columns)
+    actual = written_table.select(preserved_columns)
+    if not expected.equals(actual, check_metadata=False):
+        raise RuntimeError(f"Data changed before writing trimmed parquet: {output_path}")
+    _, pq = _import_pyarrow()
+    persisted = pq.read_table(output_path, columns=preserved_columns)
+    if not expected.equals(persisted, check_metadata=False):
+        raise RuntimeError(f"Data changed after writing trimmed parquet: {output_path}")
 
 
 def _build_episode_plan(table: Any, episode_entry: dict[str, Any], new_episode_index: int, args: Args) -> EpisodePlan | None:
@@ -468,7 +495,6 @@ def _write_episode_outputs(
     info: dict[str, Any],
     args: Args,
     video_keys: list[str],
-    fps: float,
     plan: EpisodePlan,
     global_start_index: int,
     table: Any | None = None,
@@ -477,9 +503,9 @@ def _write_episode_outputs(
     if table is None:
         table = pq.read_table(_episode_path(source_root, info, plan.old_episode_index))
 
-    trimmed_table = table.slice(plan.trim_start, plan.kept_length)
+    source_slice = table.slice(plan.trim_start, plan.kept_length)
     trimmed_table = _rewrite_indices(
-        trimmed_table,
+        source_slice,
         new_episode_index=plan.new_episode_index,
         global_start_index=global_start_index,
         reset_timestamps=args.reset_timestamps,
@@ -488,6 +514,7 @@ def _write_episode_outputs(
     output_path = _output_episode_path(output_root, info, plan.new_episode_index)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(trimmed_table, output_path)
+    _verify_preserved_data(source_slice, trimmed_table, output_path, args.reset_timestamps)
 
     result = WriteResult()
     if args.trim_videos:
@@ -504,7 +531,6 @@ def _write_episode_outputs(
                 trim_start=plan.trim_start,
                 trim_end=plan.trim_end,
                 original_length=plan.original_length,
-                fps=fps,
                 args=args,
             )
             result.videos_written += 1
@@ -628,7 +654,6 @@ def main(args: Args) -> None:
     episodes = _select_episodes(_load_jsonl(source_meta_dir / "episodes.jsonl"), args)
     source_stats_by_episode = _load_episode_stats(source_meta_dir)
     video_keys = _parse_video_keys(args.video_keys) or _detect_video_keys(source_root, info, episodes)
-    fps = float(info.get("fps") or 30)
     if args.trim_videos and not video_keys and ((source_root / "videos").exists() or int(info.get("total_videos") or 0) > 0):
         raise ValueError(
             "Video trimming is enabled, but no video keys were detected. "
@@ -667,7 +692,6 @@ def main(args: Args) -> None:
                         info,
                         args,
                         video_keys,
-                        fps,
                         plan,
                         global_index,
                         table=table,
@@ -719,7 +743,6 @@ def main(args: Args) -> None:
                         info,
                         args,
                         video_keys,
-                        fps,
                         plan,
                         global_starts[plan.new_episode_index],
                     )
@@ -756,6 +779,8 @@ def main(args: Args) -> None:
         "resume": args.resume,
         "episodes_reused": episodes_reused,
         "workers": worker_count,
+        "data_verified": not args.dry_run,
+        "lossless_video": args.lossless_video,
     }
 
     if not args.dry_run:
@@ -764,7 +789,7 @@ def main(args: Args) -> None:
         output_info["total_episodes"] = len(output_episodes)
         output_info["total_frames"] = total_kept
         output_info["total_chunks"] = int(math.ceil(len(output_episodes) / chunk_size))
-        output_info["total_videos"] = videos_written if args.trim_videos else int(info.get("total_videos") or 0)
+        output_info["total_videos"] = videos_written
         output_info["splits"] = {"train": f"0:{len(output_episodes)}"}
         _write_json(output_meta_dir / "info.json", output_info)
         _write_jsonl(output_meta_dir / "episodes.jsonl", output_episodes)
@@ -811,6 +836,12 @@ def _parse_args() -> Args:
     parser.add_argument("--ffmpeg", default=defaults.ffmpeg)
     parser.add_argument("--video-crf", type=int, default=defaults.video_crf)
     parser.add_argument("--video-preset", default=defaults.video_preset)
+    parser.add_argument(
+        "--lossless-video",
+        action=argparse.BooleanOptionalAction,
+        default=defaults.lossless_video,
+        help="Encode trimmed videos with lossless H.264 (QP 0).",
+    )
     parser.add_argument("--workers", type=int, default=defaults.workers, help="Parallel episode workers. Use 0 for CPU count.")
     return Args(**vars(parser.parse_args()))
 

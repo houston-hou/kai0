@@ -34,6 +34,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+
+def _ensure_numpy_fallback_path() -> None:
+    pkgs_dir = Path(sys.prefix) / "pkgs"
+    if not pkgs_dir.exists():
+        return
+    candidates = sorted(pkgs_dir.glob("numpy-base-*/Lib/site-packages"), reverse=True)
+    for candidate in candidates:
+        if (candidate / "numpy" / "lib").exists() and str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
+            return
+
+
+_ensure_numpy_fallback_path()
+
 import numpy as np
 
 
@@ -51,13 +65,7 @@ def _import_pyarrow():
         import pyarrow as pa  # type: ignore
         import pyarrow.parquet as pq  # type: ignore
     except Exception:
-        pkgs_dir = Path(sys.prefix) / "pkgs"
-        if pkgs_dir.exists():
-            candidates = sorted(pkgs_dir.glob("numpy-base-*/Lib/site-packages"), reverse=True)
-            for candidate in candidates:
-                if (candidate / "numpy" / "lib").exists() and str(candidate) not in sys.path:
-                    sys.path.insert(0, str(candidate))
-                    break
+        _ensure_numpy_fallback_path()
         import pyarrow as pa  # type: ignore
         import pyarrow.parquet as pq  # type: ignore
 
@@ -212,39 +220,63 @@ def _clip_video(
     *,
     start_frame: int,
     frame_count: int,
-    fps: float,
     ffmpeg: str,
     crf: int,
     preset: str,
+    lossless: bool,
 ) -> bool:
     if not source_video.exists():
         print(f"warning: missing video {source_video}")
         return False
     output_video.parent.mkdir(parents=True, exist_ok=True)
-    start_seconds = start_frame / fps
-    duration = frame_count / fps
+    video_filter = f"trim=start_frame={start_frame}:end_frame={start_frame + frame_count},setpts=PTS-STARTPTS"
     command = [
         ffmpeg,
         "-y",
         "-i",
         str(source_video),
-        "-ss",
-        f"{start_seconds:.6f}",
-        "-t",
-        f"{duration:.6f}",
+        "-vf",
+        video_filter,
+        "-frames:v",
+        str(frame_count),
         "-an",
         "-c:v",
         "libx264",
-        "-crf",
-        str(crf),
         "-preset",
         preset,
-        str(output_video),
+        "-pix_fmt",
+        "yuv420p",
     ]
+    if lossless:
+        command.extend(["-qp", "0"])
+    else:
+        command.extend(["-crf", str(crf)])
+    command.extend(
+        [
+            "-movflags",
+            "+faststart",
+            str(output_video),
+        ]
+    )
     completed = subprocess.run(command, text=True, capture_output=True)
     if completed.returncode != 0:
         raise RuntimeError(f"ffmpeg failed for {source_video}\n{completed.stderr}")
     return True
+
+
+def _verify_preserved_data(source_slice: Any, written_table: Any, output_path: Path) -> None:
+    rewritten = {"episode_index", "frame_index", "index", "task_index", "timestamp"}
+    preserved_columns = [name for name in source_slice.column_names if name not in rewritten]
+    if not preserved_columns:
+        return
+    expected = source_slice.select(preserved_columns)
+    actual = written_table.select(preserved_columns)
+    if not expected.equals(actual, check_metadata=False):
+        raise RuntimeError(f"Data changed before writing split parquet: {output_path}")
+    _, pq = _import_pyarrow()
+    persisted = pq.read_table(output_path, columns=preserved_columns)
+    if not expected.equals(persisted, check_metadata=False):
+        raise RuntimeError(f"Data changed after writing split parquet: {output_path}")
 
 
 def _normalize_segments(payload: Any) -> list[Segment]:
@@ -293,7 +325,6 @@ def split_dataset(args: argparse.Namespace) -> dict[str, Any]:
         groups[segment.label].append(segment)
 
     _, pq = _import_pyarrow()
-    fps = float(info.get("fps") or 30)
     chunk_size = max(int(info.get("chunks_size") or 1000), 1)
     video_keys = [item.strip() for item in args.video_keys.split(",") if item.strip()] or _detect_video_keys(source_root, info, source_episodes)
     if args.split_videos and video_keys and shutil.which(args.ffmpeg) is None and not Path(args.ffmpeg).exists():
@@ -332,11 +363,12 @@ def split_dataset(args: argparse.Namespace) -> dict[str, Any]:
             start = max(0, min(segment.start, end))
             if end <= start:
                 raise ValueError(f"Empty segment after clamping: {segment}")
-            table = source_table.slice(start, end - start)
-            table = _rewrite_table(table, new_episode_index=new_episode_index, global_start_index=global_index)
+            source_slice = source_table.slice(start, end - start)
+            table = _rewrite_table(source_slice, new_episode_index=new_episode_index, global_start_index=global_index)
             out_path = _output_episode_path(dataset_root, new_episode_index, chunk_size)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             pq.write_table(table, out_path)
+            _verify_preserved_data(source_slice, table, out_path)
 
             frame_count = table.num_rows
             episode = dict(source_episode_map[segment.episode_index])
@@ -360,10 +392,10 @@ def split_dataset(args: argparse.Namespace) -> dict[str, Any]:
                         _output_video_path(dataset_root, new_episode_index, video_key, chunk_size),
                         start_frame=start,
                         frame_count=frame_count,
-                        fps=fps,
                         ffmpeg=args.ffmpeg,
                         crf=args.video_crf,
                         preset=args.video_preset,
+                        lossless=args.lossless_video,
                     )
                     if wrote:
                         videos_written += 1
@@ -379,6 +411,7 @@ def split_dataset(args: argparse.Namespace) -> dict[str, Any]:
                     "end": end,
                     "frames": frame_count,
                     "task": task_text,
+                    "data_verified": True,
                 }
             )
             global_index += frame_count
@@ -389,7 +422,8 @@ def split_dataset(args: argparse.Namespace) -> dict[str, Any]:
                 "total_episodes": len(output_episodes),
                 "total_frames": global_index,
                 "total_chunks": int(math.ceil(len(output_episodes) / chunk_size)),
-                "total_videos": videos_written if args.split_videos else int(info.get("total_videos") or 0),
+                "total_tasks": 1,
+                "total_videos": videos_written,
                 "splits": {"train": f"0:{len(output_episodes)}"},
                 "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
                 "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
@@ -409,6 +443,8 @@ def split_dataset(args: argparse.Namespace) -> dict[str, Any]:
                 "frames": global_index,
                 "videos_written": videos_written,
                 "videos_missing": videos_missing,
+                "data_verified": True,
+                "lossless_video": args.lossless_video,
             }
         )
 
@@ -428,6 +464,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--video-crf", type=int, default=23)
     parser.add_argument("--video-preset", default="fast")
+    parser.add_argument("--lossless-video", action=argparse.BooleanOptionalAction, default=False)
     return parser.parse_args()
 
 
