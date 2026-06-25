@@ -1250,6 +1250,39 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(),
     ),
     TrainConfig(
+        name="beaker2cylinder_agilex_rtc",
+        model=pi0_config.Pi0RTCConfig(pi05=True, active_arm="left"),
+        data=LerobotAgilexDataConfig(
+            repo_id=None,
+            use_multi_repo=True,
+            repo_ids=[
+                "measure_liquid_full_0605_atomic_beaker2cylinder_trimmed",
+                "measure_liquid_full_0606_atomic_beaker2cylinder_trimmed",
+                "measure_liquid_full_atomic_beaker2cylinder_trimmed",
+            ],
+            root="/mnt/hdy/emchem_pi05/training_data",
+            assets=AssetsConfig(asset_id="beaker2cylinder_agilex"),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "top_head": "observation.images.cam_high",
+                                "hand_left": "observation.images.cam_left_wrist",
+                                "hand_right": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=False,
+        ),
+    ),
+    TrainConfig(
         name="cylinder2reactor_agilex",
         model=pi0_config.Pi0Config(pi05=True, active_arm="left"),
         data=LerobotAgilexDataConfig(
