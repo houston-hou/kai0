@@ -44,6 +44,13 @@ _ACTION_EXPERT_PATTERNS = (
     re.compile(r"^time_mlp_in/"),
     re.compile(r"^time_mlp_out/"),
 )
+_IMAGE_ENCODER_PATTERNS = (re.compile(r"^PaliGemma/img/"),)
+
+
+def _selected_patterns(*, include_img: bool) -> tuple[re.Pattern[str], ...]:
+    if include_img:
+        return _ACTION_EXPERT_PATTERNS + _IMAGE_ENCODER_PATTERNS
+    return _ACTION_EXPERT_PATTERNS
 
 
 def _flatten(params: dict[str, Any]) -> dict[str, Any]:
@@ -54,8 +61,8 @@ def _unflatten(params: dict[str, Any]) -> dict[str, Any]:
     return traverse_util.unflatten_dict(params, sep="/")
 
 
-def _is_action_expert_key(key: str) -> bool:
-    return any(pattern.search(key) for pattern in _ACTION_EXPERT_PATTERNS)
+def _is_selected_key(key: str, *, include_img: bool) -> bool:
+    return any(pattern.search(key) for pattern in _selected_patterns(include_img=include_img))
 
 
 def _num_bytes(value: Any) -> int:
@@ -100,10 +107,17 @@ def _summarize(flat_params: dict[str, Any], keys: Iterable[str]) -> tuple[int, i
     return len(selected), sum(_num_bytes(flat_params[key]) for key in selected)
 
 
+def _shape(value: Any) -> tuple[int, ...] | None:
+    shape = getattr(value, "shape", None)
+    if shape is None:
+        return None
+    return tuple(shape)
+
+
 def inspect_params(args: argparse.Namespace) -> None:
     flat_params = _flatten(_load_params(args.params))
-    expert_keys = [key for key in flat_params if _is_action_expert_key(key)]
-    vlm_keys = [key for key in flat_params if not _is_action_expert_key(key)]
+    expert_keys = [key for key in flat_params if _is_selected_key(key, include_img=args.include_img)]
+    vlm_keys = [key for key in flat_params if not _is_selected_key(key, include_img=args.include_img)]
 
     total_count, total_size = _summarize(flat_params, flat_params)
     expert_count, expert_size = _summarize(flat_params, expert_keys)
@@ -111,10 +125,11 @@ def inspect_params(args: argparse.Namespace) -> None:
 
     print(f"params: {args.params}")
     print(f"total:         {total_count:6d} leaves, {_format_bytes(total_size)}")
-    print(f"action expert: {expert_count:6d} leaves, {_format_bytes(expert_size)}")
-    print(f"base/VLM:      {vlm_count:6d} leaves, {_format_bytes(vlm_size)}")
+    selected_label = "action+img" if args.include_img else "action expert"
+    print(f"{selected_label}: {expert_count:6d} leaves, {_format_bytes(expert_size)}")
+    print(f"other params:  {vlm_count:6d} leaves, {_format_bytes(vlm_size)}")
     print()
-    print("sample action expert keys:")
+    print(f"sample {selected_label} keys:")
     for key in sorted(expert_keys)[: args.max_keys]:
         value = flat_params[key]
         shape = getattr(value, "shape", "?")
@@ -124,21 +139,26 @@ def inspect_params(args: argparse.Namespace) -> None:
 
 def export_expert(args: argparse.Namespace) -> None:
     flat_params = _flatten(_load_params(args.params))
-    expert_flat = {key: value for key, value in flat_params.items() if _is_action_expert_key(key)}
+    expert_flat = {
+        key: value for key, value in flat_params.items() if _is_selected_key(key, include_img=args.include_img)
+    }
     if not expert_flat:
-        raise ValueError(f"No pi05 action expert keys matched in {args.params}")
+        raise ValueError(f"No pi05 selected keys matched in {args.params}")
 
     _save_params(args.output, _unflatten(expert_flat), overwrite=args.overwrite)
     count, size = _summarize(expert_flat, expert_flat)
-    print(f"exported {count} action expert leaves ({_format_bytes(size)}) to {args.output}")
+    label = "action+img" if args.include_img else "action expert"
+    print(f"exported {count} {label} leaves ({_format_bytes(size)}) to {args.output}")
 
 
 def merge_expert(args: argparse.Namespace) -> None:
     base_flat = _flatten(_load_params(args.base_params))
     expert_flat = _flatten(_load_params(args.expert_params))
-    expert_flat = {key: value for key, value in expert_flat.items() if _is_action_expert_key(key)}
+    expert_flat = {
+        key: value for key, value in expert_flat.items() if _is_selected_key(key, include_img=args.include_img)
+    }
     if not expert_flat:
-        raise ValueError(f"No pi05 action expert keys matched in {args.expert_params}")
+        raise ValueError(f"No pi05 selected keys matched in {args.expert_params}")
 
     missing = sorted(key for key in expert_flat if key not in base_flat)
     if missing:
@@ -149,11 +169,28 @@ def merge_expert(args: argparse.Namespace) -> None:
             f"{preview}"
         )
 
+    shape_mismatches = sorted(
+        (key, _shape(base_flat[key]), _shape(value))
+        for key, value in expert_flat.items()
+        if _shape(base_flat[key]) != _shape(value)
+    )
+    if shape_mismatches:
+        preview = "\n".join(
+            f"  {key}: base={base_shape}, expert={expert_shape}"
+            for key, base_shape, expert_shape in shape_mismatches[:20]
+        )
+        raise ValueError(
+            "Expert checkpoint contains params with shapes that do not match the base params. "
+            "The model configs probably differ.\n"
+            f"{preview}"
+        )
+
     merged_flat = dict(base_flat)
     merged_flat.update(expert_flat)
     _save_params(args.output, _unflatten(merged_flat), overwrite=args.overwrite)
     count, size = _summarize(expert_flat, expert_flat)
-    print(f"merged {count} action expert leaves ({_format_bytes(size)}) into {args.output}")
+    label = "action+img" if args.include_img else "action expert"
+    print(f"merged {count} {label} leaves ({_format_bytes(size)}) into {args.output}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -163,12 +200,14 @@ def parse_args() -> argparse.Namespace:
     inspect_parser = subparsers.add_parser("inspect")
     inspect_parser.add_argument("--params", required=True)
     inspect_parser.add_argument("--max-keys", type=int, default=30)
+    inspect_parser.add_argument("--include-img", action="store_true")
     inspect_parser.set_defaults(func=inspect_params)
 
     export_parser = subparsers.add_parser("export")
     export_parser.add_argument("--params", required=True)
     export_parser.add_argument("--output", required=True, type=pathlib.Path)
     export_parser.add_argument("--overwrite", action="store_true")
+    export_parser.add_argument("--include-img", action="store_true")
     export_parser.set_defaults(func=export_expert)
 
     merge_parser = subparsers.add_parser("merge")
@@ -176,6 +215,7 @@ def parse_args() -> argparse.Namespace:
     merge_parser.add_argument("--expert-params", required=True)
     merge_parser.add_argument("--output", required=True, type=pathlib.Path)
     merge_parser.add_argument("--overwrite", action="store_true")
+    merge_parser.add_argument("--include-img", action="store_true")
     merge_parser.set_defaults(func=merge_expert)
 
     return parser.parse_args()
