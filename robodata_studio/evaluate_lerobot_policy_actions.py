@@ -121,6 +121,14 @@ def _import_cv2():
     return cv2
 
 
+def _import_av():
+    try:
+        import av
+    except ImportError:
+        return None
+    return av
+
+
 def _import_pyplot():
     try:
         import matplotlib
@@ -181,22 +189,60 @@ def _read_image_path(path: Path) -> np.ndarray:
 
 class VideoReader:
     def __init__(self, path: Path) -> None:
-        cv2 = _import_cv2()
         self.path = path
-        self.cap = cv2.VideoCapture(str(path))
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Could not open video: {path}")
+        self._av = _import_av()
+        self._container = None
+        self._stream = None
+        self._frames = None
+        self._next_frame_index = 0
+        self._cv2 = None
+        self._cap = None
+        if self._av is not None:
+            self._open_av()
+        else:
+            self._open_cv2()
+
+    def _open_av(self) -> None:
+        self._container = self._av.open(str(self.path))
+        self._stream = self._container.streams.video[0]
+        self._frames = self._container.decode(self._stream)
+        self._next_frame_index = 0
+
+    def _open_cv2(self) -> None:
+        self._cv2 = _import_cv2()
+        self._cap = self._cv2.VideoCapture(str(self.path))
+        if not self._cap.isOpened():
+            raise RuntimeError(f"Could not open video: {self.path}")
+
+    def _reset_av(self) -> None:
+        if self._container is not None:
+            self._container.close()
+        self._open_av()
 
     def read_rgb(self, frame_index: int) -> np.ndarray:
-        cv2 = _import_cv2()
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_index))
-        ok, frame_bgr = self.cap.read()
+        frame_index = int(frame_index)
+        if self._av is not None:
+            if frame_index < self._next_frame_index:
+                self._reset_av()
+            assert self._frames is not None
+            for frame in self._frames:
+                current = self._next_frame_index
+                self._next_frame_index += 1
+                if current == frame_index:
+                    return frame.to_rgb().to_ndarray()
+            raise RuntimeError(f"Could not read frame {frame_index} from {self.path}")
+
+        self._cap.set(self._cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ok, frame_bgr = self._cap.read()
         if not ok:
             raise RuntimeError(f"Could not read frame {frame_index} from {self.path}")
-        return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        return self._cv2.cvtColor(frame_bgr, self._cv2.COLOR_BGR2RGB)
 
     def close(self) -> None:
-        self.cap.release()
+        if self._container is not None:
+            self._container.close()
+        if self._cap is not None:
+            self._cap.release()
 
 
 def _build_video_readers(root: Path, info: dict[str, Any], episode_index: int) -> dict[str, VideoReader]:
