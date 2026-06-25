@@ -34,6 +34,8 @@ observation_window = None
 lang_embeddings = "fold the sleeve"
 
 RIGHT_OFFSET = 0.003
+B2C_LEFT_INIT = [-0.021979, -0.008286, 0.0, -0.108728, 0.341955, 0.155252, -0.0007]
+B2C_RIGHT_INIT = [0.090622, -0.011461, 0.000837, -0.111415, 0.306823, -0.011269, -0.00154]
 published_actions_history = []  # list[np.ndarray(shape=(14,))]
 shutdown_event = threading.Event()
 
@@ -200,8 +202,8 @@ def model_inference(args, config, ros_operator):
     chunk_size = config["chunk_size"]
 
     # Initialize position of the puppet arm
-    left0 = [0, 0.32, -0.36, 0, 0.24, 0, 0.07]
-    right0 = [0, 0.32, -0.36, 0, 0.24, 0, 0.07]
+    left0 = B2C_LEFT_INIT
+    right0 = B2C_RIGHT_INIT
 
     ros_operator.puppet_arm_publish_continuous(left0, right0)
     input("Press enter to continue")
@@ -234,7 +236,7 @@ def model_inference(args, config, ros_operator):
     except Exception as e:
         rospy.logwarn(f"[startup_warmup_prep] {e}")
     # Initialize the previous action to be the initial robot state
-    pre_action = np.zeros(config["state_dim"])
+    pre_action = np.asarray(observation_window[-1]["qpos"], dtype=np.float32).copy()
     action = None
     # Inference loop
     with torch.inference_mode():

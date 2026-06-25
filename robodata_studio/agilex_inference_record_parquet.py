@@ -28,6 +28,10 @@ import torch
 from train_deploy_alignment.inference.agilex.inference import agilex_inference_openpi_sync as base
 
 
+B2C_LEFT_INIT = [-0.021979, -0.008286, 0.0, -0.108728, 0.341955, 0.155252, -0.0007]
+B2C_RIGHT_INIT = [0.090622, -0.011461, 0.000837, -0.111415, 0.306823, -0.011269, -0.00154]
+
+
 def _recording_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--record_output", default="")
@@ -142,8 +146,8 @@ def model_inference_with_recording(args, config, ros_operator) -> Path | None:
     policy = base.websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
     print(f"Server metadata: {policy.get_server_metadata()}")
 
-    left0 = [0, 0.32, -0.36, 0, 0.24, 0, 0.07]
-    right0 = [0, 0.32, -0.36, 0, 0.24, 0, 0.07]
+    left0 = B2C_LEFT_INIT
+    right0 = B2C_RIGHT_INIT
     ros_operator.puppet_arm_publish_continuous(left0, right0)
     input("Press enter to continue")
     ros_operator.puppet_arm_publish_continuous(left0, right0)
@@ -159,7 +163,7 @@ def model_inference_with_recording(args, config, ros_operator) -> Path | None:
     )
     max_steps = min(int(args.max_publish_step), int(args.record_max_steps))
     rate = base.rospy.Rate(args.publish_rate)
-    pre_action = np.zeros(config["state_dim"], dtype=np.float32)
+    pre_action = np.asarray(base.observation_window[-1]["qpos"], dtype=np.float32).copy()
     started_at = time.time()
     step = 0
     parquet_path = None
