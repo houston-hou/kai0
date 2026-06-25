@@ -35,6 +35,32 @@ def _recording_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--record_flush_chunks", type=int, default=1)
     parser.add_argument("--record_image_format", choices=["png", "jpeg"], default="png")
     parser.add_argument("--record_jpeg_quality", type=int, default=90)
+    parser.add_argument(
+        "--camera_color_order",
+        choices=["rgb", "bgr"],
+        default="rgb",
+        help="Color channel order returned by ROS cv_bridge passthrough images.",
+    )
+    parser.add_argument(
+        "--model_color_order",
+        choices=["rgb", "bgr"],
+        default="rgb",
+        help="Color channel order sent to the policy and recorded to parquet.",
+    )
+    parser.add_argument(
+        "--swap_red_blue_for_model",
+        dest="model_color_order",
+        action="store_const",
+        const="bgr",
+        help="Compatibility alias for --model_color_order bgr.",
+    )
+    parser.add_argument(
+        "--no_swap_red_blue_for_model",
+        dest="model_color_order",
+        action="store_const",
+        const="rgb",
+        help="Compatibility alias for --model_color_order rgb.",
+    )
     parser.add_argument("--prompt", default=base.lang_embeddings)
     parser.add_argument("--inference_mode", default="sync", help="Metadata label for the server/policy mode.")
     return parser.parse_known_args()
@@ -57,11 +83,16 @@ def _all_args() -> argparse.Namespace:
     return args
 
 
-def _build_payload(config: dict) -> dict:
+def _build_payload(config: dict, camera_color_order: str, model_color_order: str) -> dict:
     latest = base.observation_window[-1]
     images = [latest["images"][name] for name in config["camera_names"]]
-    images = [cv2.cvtColor(image, cv2.COLOR_BGR2RGB) for image in images]
+    if camera_color_order == "bgr":
+        images = [cv2.cvtColor(image, cv2.COLOR_BGR2RGB) for image in images]
+    else:
+        images = [np.asarray(image) for image in images]
     images = base.image_tools.resize_with_pad(np.asarray(images), 224, 224)
+    if model_color_order == "bgr":
+        images = [cv2.cvtColor(image, cv2.COLOR_RGB2BGR) for image in images]
     return {
         "state": np.asarray(latest["qpos"], dtype=np.float32),
         "images": {
@@ -73,11 +104,16 @@ def _build_payload(config: dict) -> dict:
     }
 
 
-def _image_payload(images: dict[str, np.ndarray], image_format: str, jpeg_quality: int) -> dict[str, bytes]:
+def _image_payload(
+    images: dict[str, np.ndarray],
+    image_format: str,
+    jpeg_quality: int,
+    model_color_order: str,
+) -> dict[str, bytes]:
     output = {}
-    for key, chw_rgb in images.items():
-        rgb = np.asarray(chw_rgb).transpose(1, 2, 0)
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    for key, chw_image in images.items():
+        image = np.asarray(chw_image).transpose(1, 2, 0)
+        bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR) if model_color_order == "rgb" else image
         extension = ".png" if image_format == "png" else ".jpg"
         options = [] if image_format == "png" else [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
         ok, encoded = cv2.imencode(extension, bgr, options)
@@ -95,7 +131,7 @@ def _default_output() -> Path:
 def _warmup(args, config, ros_operator, policy) -> None:
     try:
         base.update_observation_window(args, config, ros_operator)
-        payload = _build_payload(config)
+        payload = _build_payload(config, args.camera_color_order, args.model_color_order)
         policy.infer(payload)
         print("Warmup done.")
     except Exception as exc:
@@ -132,7 +168,7 @@ def model_inference_with_recording(args, config, ros_operator) -> Path | None:
         with torch.inference_mode():
             while step < max_steps and not base.rospy.is_shutdown() and not base.shutdown_event.is_set():
                 base.update_observation_window(args, config, ros_operator)
-                payload = _build_payload(config)
+                payload = _build_payload(config, args.camera_color_order, args.model_color_order)
                 infer_started = time.perf_counter()
                 result = policy.infer(payload)
                 inference_ms = (time.perf_counter() - infer_started) * 1000.0
@@ -175,6 +211,7 @@ def model_inference_with_recording(args, config, ros_operator) -> Path | None:
                         payload["images"],
                         args.record_image_format,
                         args.record_jpeg_quality,
+                        args.model_color_order,
                     ),
                     action_sequence=returned_action_chunk,
                     executed_actions=np.asarray(executed_actions, dtype=np.float32).reshape(-1, 14),
