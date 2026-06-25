@@ -75,6 +75,31 @@ def get_config(args):
     return config
 
 
+def _prepare_model_images(args, config, latest_obs):
+    images = [latest_obs["images"][name] for name in config["camera_names"]]
+    if args.camera_color_order == "bgr":
+        images = [cv2.cvtColor(image, cv2.COLOR_BGR2RGB) for image in images]
+    else:
+        images = [np.asarray(image) for image in images]
+    images = image_tools.resize_with_pad(np.asarray(images), 224, 224)
+    if args.model_color_order == "bgr":
+        images = [cv2.cvtColor(image, cv2.COLOR_RGB2BGR) for image in images]
+    return images
+
+
+def _build_payload(args, config, latest_obs):
+    image_arrs = _prepare_model_images(args, config, latest_obs)
+    return {
+        "state": latest_obs["qpos"],
+        "images": {
+            "top_head": image_arrs[0].transpose(2, 0, 1),
+            "hand_right": image_arrs[1].transpose(2, 0, 1),
+            "hand_left": image_arrs[2].transpose(2, 0, 1),
+        },
+        "prompt": lang_embeddings,
+    }
+
+
 # Get the observation from the ROS topic
 def get_ros_observation(args, ros_operator):
     rate = rospy.Rate(args.publish_rate)
@@ -158,27 +183,7 @@ def inference_fn(args, config, policy):
     global lang_embeddings
 
     while True and not rospy.is_shutdown():
-        # fetch images in sequence [front, right, left]
-        image_arrs = [
-            observation_window[-1]["images"][config["camera_names"][0]],
-            observation_window[-1]["images"][config["camera_names"][1]],
-            observation_window[-1]["images"][config["camera_names"][2]],
-        ]
-        # convert bgr ro rgb
-        image_arrs = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in image_arrs]
-        image_arrs = image_tools.resize_with_pad(np.array(image_arrs), 224, 224)
-
-        # get last qpos in shape [14, ]
-        proprio = observation_window[-1]["qpos"]
-        payload = {
-            "state": proprio,
-            "images": {
-                "top_head": image_arrs[0].transpose(2, 0, 1),
-                "hand_right": image_arrs[1].transpose(2, 0, 1),
-                "hand_left": image_arrs[2].transpose(2, 0, 1),
-            },
-            "prompt": lang_embeddings,
-        }
+        payload = _build_payload(args, config, observation_window[-1])
 
         time1 = time.time()
         # actions shaped as [64, 14] in format [left, right]
@@ -211,24 +216,7 @@ def model_inference(args, config, ros_operator):
     # Warmup: one blocking inference (discard result)
     try:
         update_observation_window(args, config, ros_operator)
-        latest_obs = observation_window[-1]
-        image_arrs = [
-            latest_obs["images"][config["camera_names"][0]],
-            latest_obs["images"][config["camera_names"][1]],
-            latest_obs["images"][config["camera_names"][2]],
-        ]
-        image_arrs = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in image_arrs]
-        image_arrs = image_tools.resize_with_pad(np.array(image_arrs), 224, 224)
-        proprio = latest_obs["qpos"]
-        payload = {
-            "state": proprio,
-            "images": {
-                "top_head": image_arrs[0].transpose(2, 0, 1),
-                "hand_right": image_arrs[1].transpose(2, 0, 1),
-                "hand_left": image_arrs[2].transpose(2, 0, 1),
-            },
-            "prompt": lang_embeddings,
-        }
+        payload = _build_payload(args, config, observation_window[-1])
         try:
             _ = policy.infer(payload)
         except Exception as e:
@@ -896,6 +884,20 @@ def get_arguments():
         action="store_true",
         help="Whether to use depth images",
         default=False,
+        required=False,
+    )
+    parser.add_argument(
+        "--camera_color_order",
+        choices=["rgb", "bgr"],
+        default="rgb",
+        help="Color channel order returned by ROS cv_bridge passthrough images.",
+        required=False,
+    )
+    parser.add_argument(
+        "--model_color_order",
+        choices=["rgb", "bgr"],
+        default="rgb",
+        help="Color channel order sent to the policy server.",
         required=False,
     )
     parser.add_argument(

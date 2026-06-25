@@ -94,26 +94,7 @@ def inference_fn_non_blocking_fast(args, config, policy, ros_operator):
             time1 = time.time()
 
             latest_obs = observation_window[-1]
-            imgs = [
-                latest_obs["images"][config["camera_names"][0]],
-                latest_obs["images"][config["camera_names"][1]],
-                latest_obs["images"][config["camera_names"][2]],
-            ]
-            # BGR->RGB and pad/resize to model input size
-            imgs = [cv2.cvtColor(im, cv2.COLOR_BGR2RGB) for im in imgs]
-            imgs = image_tools.resize_with_pad(np.array(imgs), 224, 224)
-            proprio = latest_obs["qpos"]
-
-            # 2) Build payload
-            payload = {
-                "state": proprio,
-                "images": {
-                    "top_head":  imgs[0].transpose(2, 0, 1),   # CHW
-                    "hand_right": imgs[1].transpose(2, 0, 1),
-                    "hand_left":  imgs[2].transpose(2, 0, 1),
-                },
-                "prompt": lang_embeddings,
-            }
+            payload = _build_payload(args, config, latest_obs)
 
 
             # 3) Infer (block until chunk received)
@@ -298,27 +279,15 @@ def inference_fn_non_blocking_rtc(args, config, policy, ros_operator):
         try:
             update_observation_window(args, config, ros_operator)
             latest_obs = observation_window[-1]
-            image_arrs = [
-                latest_obs["images"][config["camera_names"][0]],
-                latest_obs["images"][config["camera_names"][1]],
-                latest_obs["images"][config["camera_names"][2]],
-            ]
-            image_arrs = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in image_arrs]
-            image_arrs = image_tools.resize_with_pad(np.array(image_arrs), 224, 224)
-            proprio = latest_obs["qpos"]
-            payload = {
-                "state": proprio,
-                "images": {
-                    "top_head": image_arrs[0].transpose(2, 0, 1),
-                    "hand_right": image_arrs[1].transpose(2, 0, 1),
-                    "hand_left": image_arrs[2].transpose(2, 0, 1),
-                },
-                "prompt": lang_embeddings,
-                "execute_horizon": exec_h,
-                "enable_rtc": True,
-                "mask_prefix_delay": getattr(args, "rtc_mask_prefix_delay", False),
-                "max_guidance_weight": getattr(args, "rtc_max_guidance_weight", 0.5),
-            }
+            payload = _build_payload(args, config, latest_obs)
+            payload.update(
+                {
+                    "execute_horizon": exec_h,
+                    "enable_rtc": True,
+                    "mask_prefix_delay": getattr(args, "rtc_mask_prefix_delay", False),
+                    "max_guidance_weight": getattr(args, "rtc_max_guidance_weight", 0.5),
+                }
+            )
             with rtc_prev_chunk_lock:
                 pc = np.array(rtc_prev_chunk) if rtc_prev_chunk is not None else None
             if pc is not None:
@@ -383,6 +352,31 @@ def get_config(args):
         "camera_names": CAMERA_NAMES,
     }
     return config
+
+
+def _prepare_model_images(args, config, latest_obs):
+    images = [latest_obs["images"][name] for name in config["camera_names"]]
+    if args.camera_color_order == "bgr":
+        images = [cv2.cvtColor(image, cv2.COLOR_BGR2RGB) for image in images]
+    else:
+        images = [np.asarray(image) for image in images]
+    images = image_tools.resize_with_pad(np.asarray(images), 224, 224)
+    if args.model_color_order == "bgr":
+        images = [cv2.cvtColor(image, cv2.COLOR_RGB2BGR) for image in images]
+    return images
+
+
+def _build_payload(args, config, latest_obs):
+    image_arrs = _prepare_model_images(args, config, latest_obs)
+    return {
+        "state": latest_obs["qpos"],
+        "images": {
+            "top_head": image_arrs[0].transpose(2, 0, 1),
+            "hand_right": image_arrs[1].transpose(2, 0, 1),
+            "hand_left": image_arrs[2].transpose(2, 0, 1),
+        },
+        "prompt": lang_embeddings,
+    }
 
 
 # Get the observation from the ROS topic
@@ -479,28 +473,7 @@ def inference_fn(args, config, policy):
     while True and not rospy.is_shutdown():
         # time1 = time.time()
 
-        # fetch images in sequence [front, right, left]
-        image_arrs = [
-            observation_window[-1]["images"][config["camera_names"][0]],
-            observation_window[-1]["images"][config["camera_names"][1]],
-            observation_window[-1]["images"][config["camera_names"][2]],
-        ]
-        # convert bgr ro rgb
-        image_arrs = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in image_arrs]
-        image_arrs = image_tools.resize_with_pad(np.array(image_arrs), 224, 224)
-
-        # get last qpos in shape [14, ]
-        proprio = observation_window[-1]["qpos"]
-
-        payload = {
-            "state": proprio,
-            "images": {
-                "top_head": image_arrs[0].transpose(2, 0, 1),
-                "hand_right": image_arrs[1].transpose(2, 0, 1),
-                "hand_left": image_arrs[2].transpose(2, 0, 1),
-            },
-            "prompt": lang_embeddings,
-        }
+        payload = _build_payload(args, config, observation_window[-1])
 
         time1 = time.time()
 
@@ -619,24 +592,7 @@ def model_inference(args, config, ros_operator):
     # Startup: one blocking inference for warmup
     try:
         update_observation_window(args, config, ros_operator)
-        latest_obs = observation_window[-1]
-        image_arrs = [
-            latest_obs["images"][config["camera_names"][0]],
-            latest_obs["images"][config["camera_names"][1]],
-            latest_obs["images"][config["camera_names"][2]],
-        ]
-        image_arrs = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in image_arrs]
-        image_arrs = image_tools.resize_with_pad(np.array(image_arrs), 224, 224)
-        proprio = latest_obs["qpos"]
-        payload = {
-            "state": proprio,
-            "images": {
-                "top_head": image_arrs[0].transpose(2, 0, 1),
-                "hand_right": image_arrs[1].transpose(2, 0, 1),
-                "hand_left": image_arrs[2].transpose(2, 0, 1),
-            },
-            "prompt": lang_embeddings,
-        }
+        payload = _build_payload(args, config, observation_window[-1])
         try:
             _ = policy.infer(payload)
         except Exception as e:
@@ -651,7 +607,8 @@ def model_inference(args, config, ros_operator):
     corr_right_q6 = np.zeros(6, dtype=float)
     corrected_action_buffer = np.zeros([chunk_size, config["state_dim"]])
     # Warm start prev_chunk with current proprio to avoid first RTC step pulling toward zeros
-    prev_chunk = np.tile(proprio[None, : config["state_dim"]], (chunk_size, 1))
+    current_qpos = np.asarray(observation_window[-1]["qpos"], dtype=float)
+    prev_chunk = np.tile(current_qpos[None, : config["state_dim"]], (chunk_size, 1))
     with rtc_prev_chunk_lock:
         rtc_prev_chunk = prev_chunk.copy()
     rtc_pending_actions = np.zeros((0, config["state_dim"]), dtype=float)
@@ -1488,6 +1445,20 @@ def get_arguments():
         action="store_true",
         help="Whether to use depth images",
         default=False,
+        required=False,
+    )
+    parser.add_argument(
+        "--camera_color_order",
+        choices=["rgb", "bgr"],
+        default="rgb",
+        help="Color channel order returned by ROS cv_bridge passthrough images.",
+        required=False,
+    )
+    parser.add_argument(
+        "--model_color_order",
+        choices=["rgb", "bgr"],
+        default="rgb",
+        help="Color channel order sent to the policy server.",
         required=False,
     )
     parser.add_argument(
