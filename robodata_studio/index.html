@@ -116,6 +116,7 @@
               <input id="rowRange" type="range" min="0" max="0" value="0">
             </label>
             <div class="inline-actions">
+              <button id="nextEpisodeButton" type="button">Next Episode</button>
               <button id="prevRowButton" type="button">Prev</button>
               <button id="nextRowButton" type="button">Next</button>
               <button id="playButton" type="button">Play</button>
@@ -273,7 +274,7 @@
           <div class="section-head">
             <div>
               <h2>Trim Idle Edges</h2>
-              <p>调用 `scripts/trim_idle_edges_dataset.py` 裁掉采集前后的空白帧，并同步裁剪 video 文件。</p>
+              <p>调用 `robodata_studio/trim_idle_edges_dataset.py` 裁掉采集前后的空白帧，并同步裁剪 video 文件。</p>
             </div>
           </div>
           <div class="form-grid">
@@ -434,7 +435,7 @@
           <div class="settings-grid">
             <div><span>Training data root</span><strong>training_data</strong></div>
             <div><span>Studio port</span><strong>8091</strong></div>
-            <div><span>Trim script</span><strong>scripts/trim_idle_edges_dataset.py</strong></div>
+            <div><span>Trim script</span><strong>robodata_studio/trim_idle_edges_dataset.py</strong></div>
           </div>
         </div>
       </section>

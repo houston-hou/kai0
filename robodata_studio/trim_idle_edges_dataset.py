@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # Example:
-#   python scripts/trim_idle_edges_dataset.py \
+#   python robodata_studio/trim_idle_edges_dataset.py \
 #     --dataset-root /data/vla/hdy/RoboTwin-main/policy/pi05/training_data/emchem_atomic_merged_video_526 \
 #     --output-dataset /data/vla/hdy/RoboTwin-main/policy/pi05/training_data/emchem_atomic_merged_video_526_trimmed \
 #     --action-idle-threshold 0.01 \
@@ -9,13 +9,13 @@ from __future__ import annotations
 #     --overwrite
 #
 # Dry run first:
-#   python scripts/trim_idle_edges_dataset.py \
+#   python robodata_studio/trim_idle_edges_dataset.py \
 #     --dataset-root /data/vla/hdy/RoboTwin-main/policy/pi05/training_data/emchem_atomic_merged_video_526 \
 #     --output-dataset /data/vla/hdy/RoboTwin-main/policy/pi05/training_data/emchem_atomic_merged_video_526_trimmed \
 #     --dry-run
 #
 # Stricter trimming that also requires the observed state to be nearly static:
-#   python scripts/trim_idle_edges_dataset.py \
+#   python robodata_studio/trim_idle_edges_dataset.py \
 #     --dataset-root /path/to/source_dataset \
 #     --output-dataset /path/to/source_dataset_trimmed \
 #     --also-require-state-idle \

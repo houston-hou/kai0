@@ -242,6 +242,14 @@ function renderEpisodeOptions() {
   });
 }
 
+function updateEpisodeNavigation() {
+  const button = $("#nextEpisodeButton");
+  if (!button) return;
+  const available = currentEpisodes.filter((episode) => episode.exists);
+  const currentIndex = available.findIndex((episode) => episode.episode_name === currentEpisodeName);
+  button.disabled = !available.length || currentIndex >= available.length - 1;
+}
+
 async function loadDatasetDetails() {
   if (!selectedDataset) return;
   const payload = await fetchJson(`/api/datasets/${encodeURIComponent(selectedDataset.id)}/episodes`);
@@ -250,8 +258,12 @@ async function loadDatasetDetails() {
   renderFeatureOptions(selectedDataset.numericKeys || []);
   renderReplayControls();
   renderCompareControls();
-  if (currentEpisodes.length) {
-    await loadEpisode(currentEpisodes.find((episode) => episode.exists)?.episode_name || currentEpisodes[0].episode_name);
+  const firstAvailable = currentEpisodes.find((episode) => episode.exists);
+  if (firstAvailable) {
+    await loadEpisode(firstAvailable.episode_name);
+  } else {
+    currentEpisodeName = null;
+    updateEpisodeNavigation();
   }
 }
 
@@ -259,6 +271,7 @@ async function loadEpisode(episodeName) {
   if (!selectedDataset || !episodeName) return;
   stopPlayback();
   currentEpisodeName = episodeName;
+  updateEpisodeNavigation();
   $("#episodeSelect").value = episodeName;
   const payload = await fetchJson(`/api/datasets/${encodeURIComponent(selectedDataset.id)}/episode/${encodeURIComponent(episodeName)}/series`);
   currentSeries = payload;
@@ -330,7 +343,18 @@ function renderCurrentRow() {
   const row = currentSeries.rowMeta?.[currentRow] || {};
   $("#rowRange").value = String(currentRow);
   $("#rowReadout").textContent = `row ${currentRow} / ${Math.max((currentSeries.rowCount || 1) - 1, 0)} · frame ${row.frame_index ?? "-"} · task ${row.task_index ?? "-"}`;
-  $("#rowJson").textContent = JSON.stringify(row, null, 2);
+  const text = Object.fromEntries(Object.entries(currentSeries.textData || {}).map(([key, values]) => {
+    const value = values[currentRow] ?? "";
+    if (key.endsWith("action_sequence") && value) {
+      try {
+        return [key, JSON.parse(value)];
+      } catch {
+        return [key, value];
+      }
+    }
+    return [key, value];
+  }));
+  $("#rowJson").textContent = JSON.stringify({ ...row, ...text }, null, 2);
   renderReplayPanel();
 }
 
@@ -884,6 +908,15 @@ function renderAtomicCandidates(payload) {
   `).join("");
 }
 
+async function loadNextEpisode() {
+  const available = currentEpisodes.filter((episode) => episode.exists);
+  if (!available.length) return;
+  const currentIndex = available.findIndex((episode) => episode.episode_name === currentEpisodeName);
+  const nextIndex = currentIndex >= 0 ? currentIndex + 1 : 0;
+  if (nextIndex >= available.length) return;
+  await loadEpisode(available[nextIndex].episode_name);
+}
+
 function syncAtomicLabels() {
   $("#atomicLabelsInput").value = JSON.stringify({ segments: atomicSegments }, null, 2);
 }
@@ -1126,6 +1159,7 @@ $("#rowRange").addEventListener("input", (event) => {
   drawCompareCanvas();
 });
 $("#prevRowButton").addEventListener("click", () => stepRow(-1));
+$("#nextEpisodeButton").addEventListener("click", loadNextEpisode);
 $("#nextRowButton").addEventListener("click", () => stepRow(1));
 $("#playButton").addEventListener("click", togglePlayback);
 $("#startTrimButton").addEventListener("click", startTrimJob);

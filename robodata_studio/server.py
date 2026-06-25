@@ -22,8 +22,8 @@ STUDIO_DIR = Path(__file__).resolve().parent
 ROOT_DIR = STUDIO_DIR.parent
 TRAINING_DATA_ROOT = STUDIO_DIR.parent.parent / "organ_data_le"
 CHECKPOINTS_ROOT = ROOT_DIR / "checkpoints"
-TRIM_SCRIPT = ROOT_DIR / "scripts" / "trim_idle_edges_dataset.py"
-ATOMIC_SPLIT_SCRIPT = ROOT_DIR / "scripts" / "split_lerobot_atomic_actions.py"
+TRIM_SCRIPT = STUDIO_DIR / "trim_idle_edges_dataset.py"
+ATOMIC_SPLIT_SCRIPT = STUDIO_DIR / "split_lerobot_atomic_actions.py"
 SINGLE_CONVERTER = ROOT_DIR / "examples" / "aloha_real" / "lzc_mod_convert_aloha_data_to_lerobot_robotwin.py"
 MERGED_CONVERTER = ROOT_DIR / "examples" / "aloha_real" / "convert_aloha_data_to_lerobot_robotwin_merged.py"
 
@@ -93,9 +93,17 @@ def feature_keys(info: dict[str, Any], dtype: str | None = None, numeric: bool =
         feature_dtype = str((feature or {}).get("dtype") or "").lower()
         if dtype is not None and feature_dtype == dtype:
             output.append(key)
-        elif numeric and key != "timestamp" and feature_dtype not in {"image", "video"}:
+        elif numeric and key != "timestamp" and feature_dtype.startswith(("bool", "int", "uint", "float")):
             output.append(key)
     return sorted(output)
+
+
+def text_feature_keys(info: dict[str, Any]) -> list[str]:
+    return sorted(
+        key
+        for key, feature in (info.get("features") or {}).items()
+        if str((feature or {}).get("dtype") or "").lower() in {"string", "str", "utf8"}
+    )
 
 
 def dataset_id_for_path(root: Path) -> str:
@@ -811,12 +819,18 @@ def api_episode_series(dataset_id: str, episode_name: str) -> Response:
     normalized_episode = unquote(episode_name)
     info = load_json(root / "meta" / "info.json", {})
     numeric_keys = feature_keys(info, numeric=True)
+    text_keys = text_feature_keys(info)
     base_columns = ["timestamp", "frame_index", "episode_index", "index", "task_index"]
-    columns = [column for column in [*base_columns, *numeric_keys] if column in (info.get("features") or {}) or column in base_columns]
+    columns = [
+        column
+        for column in [*base_columns, *numeric_keys, *text_keys]
+        if column in (info.get("features") or {}) or column in base_columns
+    ]
     pq = import_pyarrow_parquet()
     table = pq.read_table(episode_parquet_path(root, info, normalized_episode), columns=columns)
     rows = table.to_pylist()
     feature_data = {key: [row_value_to_list(row.get(key)) for row in rows] for key in numeric_keys if key in table.column_names}
+    text_data = {key: [str(row.get(key) or "") for row in rows] for key in text_keys if key in table.column_names}
     row_meta = [
         {
             "timestamp": row.get("timestamp"),
@@ -832,6 +846,7 @@ def api_episode_series(dataset_id: str, episode_name: str) -> Response:
             "rowCount": len(rows),
             "rowMeta": row_meta,
             "featureData": feature_data,
+            "textData": text_data,
             "numericKeys": list(feature_data),
             "videoKeys": feature_keys(info, dtype="video"),
             "imageKeys": feature_keys(info, dtype="image"),
