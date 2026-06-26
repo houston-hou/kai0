@@ -47,7 +47,7 @@ Options:
   --skip-sync                 Do not rsync helper from the reverse tunnel.
 
 Defaults:
-  --base-params ~/.cache/openpi/openpi-assets/checkpoints/pi05_base/params
+  --base-params /home/hdy/.cache/openpi/openpi-assets/checkpoints/pi05_base/params
   --output-root /mnt/hdy/kai0/checkpoints in export mode, ~/checkpoints otherwise
   --repo-dir /mnt/hdy/kai0
   --source-repo /home/hdy/VLA/emchem_pi05
@@ -57,11 +57,19 @@ EOF
 }
 
 expand_path() {
-  case "$1" in
-    "~") printf '%s\n' "$HOME" ;;
-    "~/"*) printf '%s/%s\n' "$HOME" "${1#~/}" ;;
-    *) printf '%s\n' "$1" ;;
-  esac
+  local path="$1"
+  local home_tilde="$HOME/~/"
+  if [[ "$path" == "~" ]]; then
+    printf '%s\n' "$HOME"
+  elif [[ "$path" == "~/"* ]]; then
+    printf '%s/%s\n' "$HOME" "${path#~/}"
+  elif [[ "$path" == "$HOME/~" ]]; then
+    printf '%s\n' "$HOME"
+  elif [[ "$path" == "$HOME/~/"* ]]; then
+    printf '%s/%s\n' "$HOME" "${path#$home_tilde}"
+  else
+    printf '%s\n' "$path"
+  fi
 }
 
 require_arg() {
@@ -146,7 +154,7 @@ trained_checkpoint=""
 export_package=""
 output_name=""
 asset_id=""
-base_params="~/.cache/openpi/openpi-assets/checkpoints/pi05_base/params"
+base_params="/home/hdy/.cache/openpi/openpi-assets/checkpoints/pi05_base/params"
 output_root=""
 repo_dir="/mnt/hdy/kai0"
 source_repo="/home/hdy/VLA/emchem_pi05"
