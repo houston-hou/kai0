@@ -32,6 +32,25 @@ let compareFeature = null;
 let conversionTasks = [];
 let atomicSegments = [];
 
+const atomicPresetPrompts = {
+  liquid: [
+    "beaker_to_graduated_cylinder | pour solution from the beaker into the graduated cylinder",
+    "graduated_cylinder_to_reactor | pour solution from the graduated cylinder into the reactor",
+  ].join("\n"),
+  solid: [
+    "pick_funnel_to_reactor | pick up the funnel and place it on the reactor",
+    "pick_weighing_boat_to_balance | pick up the weighing boat and place it on the balance",
+    "press_tare_button | press the tare button on the balance",
+    "scoop_solid_to_weighing_boat | scoop solid into the weighing boat",
+    "pour_solid_to_reactor | pour the solid into the reactor",
+  ].join("\n"),
+  mix_distill: [
+    "return_funnel_to_rack | pick up the funnel and put it back on the funnel rack",
+    "place_distillation_rack | place the distillation rack",
+    "turn_reactor_knob | turn the reactor knob",
+  ].join("\n"),
+};
+
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const raw = await response.text();
@@ -144,6 +163,10 @@ function renderDatasetOptions() {
   const atomicOutputRoot = $("#atomicOutputRootInput");
   if (atomicOutputRoot && !atomicOutputRoot.value) {
     atomicOutputRoot.placeholder = selectedDataset.absoluteRoot.replace(/[\\/][^\\/]+$/, "");
+  }
+  const atomicBatchSourceRoot = $("#atomicBatchSourceRootInput");
+  if (atomicBatchSourceRoot && !atomicBatchSourceRoot.value) {
+    atomicBatchSourceRoot.placeholder = selectedDataset.absoluteRoot.replace(/[\\/][^\\/]+$/, "");
   }
 }
 
@@ -1011,6 +1034,58 @@ async function startAtomicSplitJob() {
   }
 }
 
+function applyAtomicPresetPrompts(force = false) {
+  const input = $("#atomicPromptsInput");
+  const preset = $("#atomicTaskPresetSelect")?.value || "solid";
+  if (!input) return;
+  if (force || !input.value.trim()) {
+    input.value = atomicPresetPrompts[preset] || atomicPresetPrompts.solid;
+  }
+}
+
+function atomicBatchPayload() {
+  const sourceRoot = $("#atomicBatchSourceRootInput").value.trim();
+  if (!sourceRoot) throw new Error("Multi dataset source root is required");
+  return {
+    sourceRoot,
+    outputRoot: $("#atomicOutputRootInput").value.trim() || sourceRoot,
+    repoPrefix: $("#atomicRepoPrefixInput").value.trim() || sourceRoot.replace(/[\\/]$/, "").split(/[\\/]/).pop() || "atomic",
+    taskPreset: $("#atomicTaskPresetSelect").value,
+    subtasks: $("#atomicPromptsInput").value.trim(),
+    stateKey: $("#atomicStateKeyInput").value.trim() || "observation.state",
+    actionKey: $("#atomicActionKeyInput").value.trim() || "action",
+    jointThreshold: Number($("#atomicJointThresholdInput").value) || 0.035,
+    minHomeRatio: 0.65,
+    fallbackHomeRatio: 0.45,
+    edgeHomeRatio: 0.65,
+    searchRadius: Number($("#atomicSearchRadiusInput").value) || 80,
+    minGap: Number($("#atomicMinGapInput").value) || 20,
+    minEdgeHomeFrames: 5,
+    keepEdgeHomeFrames: 0,
+    minSegmentFrames: 20,
+    edgeStateVelocityThreshold: 0.02,
+    splitVideos: $("#atomicSplitVideosInput").checked,
+    losslessVideos: $("#atomicLosslessVideosInput").checked,
+    videoKeys: $("#atomicVideoKeysInput").value.trim(),
+    skipFailedEpisodes: true,
+  };
+}
+
+async function startAtomicBatchSplitJob() {
+  try {
+    applyAtomicPresetPrompts(false);
+    const payload = await fetchJson("/api/editor/batch-split-atomic", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(atomicBatchPayload()),
+    });
+    $("#atomicSplitOutput").textContent = JSON.stringify(payload.job, null, 2);
+    await loadJobs();
+  } catch (error) {
+    $("#atomicSplitOutput").textContent = error.message;
+  }
+}
+
 async function addDatasetPath() {
   const path = $("#datasetPathInput").value.trim();
   if (!path) return;
@@ -1105,7 +1180,7 @@ async function loadJobs() {
       if (job.kind === "hdf5-convert") {
         $("#conversionJobOutput").textContent = JSON.stringify(job, null, 2);
         setView("editor");
-      } else if (job.kind === "split-atomic") {
+      } else if (job.kind === "split-atomic" || job.kind === "batch-split-atomic") {
         $("#atomicSplitOutput").textContent = JSON.stringify(job, null, 2);
         setView("editor");
       } else {
@@ -1171,6 +1246,8 @@ $("#refreshConversionJobsButton").addEventListener("click", loadJobs);
 $("#conversionSplitModeSelect").addEventListener("change", updateConversionControls);
 $("#suggestAtomicButton").addEventListener("click", suggestAtomicKeyframes);
 $("#startAtomicSplitButton").addEventListener("click", startAtomicSplitJob);
+$("#startAtomicBatchSplitButton").addEventListener("click", startAtomicBatchSplitJob);
+$("#atomicTaskPresetSelect").addEventListener("change", () => applyAtomicPresetPrompts(true));
 $("#atomicSegmentEditor").addEventListener("change", updateAtomicSegment);
 $("#atomicLabelsInput").addEventListener("change", () => {
   try {
@@ -1210,4 +1287,5 @@ restoreDatasetPaths().then(() => loadCatalog()).catch((error) => {
 });
 updateConversionControls();
 renderConversionTasks();
+applyAtomicPresetPrompts(false);
 renderAtomicSegmentEditor();

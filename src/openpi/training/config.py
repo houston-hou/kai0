@@ -728,6 +728,16 @@ class TrainConfig:
     log_interval: int = 100
     # How often (in steps) to save checkpoints.
     save_interval: int = 1000
+    # If true, keep a fixed non-shuffled batch for periodic policy rollout diagnostics.
+    heldout_eval_enabled: bool = False
+    # Number of held-out samples to evaluate and plot. This is capped by batch_size.
+    heldout_eval_samples: int = 4
+    # Number of action steps to compare from each sampled chunk. 0 means use the model action horizon.
+    heldout_eval_horizon: int = 0
+    # Number of flattened timesteps to show in the wandb action-compare plot.
+    heldout_eval_compare_timesteps: int = 1000
+    # Number of diffusion sampling steps used for held-out inference.
+    heldout_eval_num_steps: int = 10
     
 #************************advantage estimator***************************
     advantage_estimator: bool = False
@@ -1227,7 +1237,10 @@ _CONFIGS = [
             use_delta_joint_actions=False,
         ),
         freeze_filter=nnx.All(
-            nnx_utils.PathRegex(r".*llm.*"),
+            nnx.Any(
+                nnx_utils.PathRegex(r".*llm.*"),
+                nnx_utils.PathRegex(r".*PaliGemma/img.*"),
+            ),
             nnx.Not(nnx_utils.PathRegex(r".*llm.*_1.*")),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(

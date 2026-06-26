@@ -27,6 +27,7 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
+import openpi.transforms as _transforms
 
 
 print("device_count", jax.device_count())
@@ -196,6 +197,132 @@ def train_step(
     return new_state, info
 
 
+@at.typecheck
+def heldout_eval_step(
+    config: _config.TrainConfig,
+    rng: at.KeyArrayLike,
+    state: training_utils.TrainState,
+    batch: tuple[_model.Observation, _model.Actions],
+) -> _model.Actions:
+    model = nnx.merge(state.model_def, state.params)
+    model.eval()
+    observation, _ = batch
+    return model.sample_actions(rng, observation, num_steps=config.heldout_eval_num_steps)
+
+
+def _make_output_transform(data_config: _config.DataConfig):
+    return _transforms.compose(
+        [
+            *data_config.model_transforms.outputs,
+            _transforms.Unnormalize(data_config.norm_stats, use_quantiles=data_config.use_quantile_norm),
+            *data_config.data_transforms.outputs,
+        ]
+    )
+
+
+def _to_host_array(value: Any) -> np.ndarray:
+    return np.asarray(jax.device_get(value))
+
+
+def _decode_eval_actions(
+    output_transform,
+    observation: _model.Observation,
+    actions: np.ndarray,
+) -> np.ndarray:
+    decoded = output_transform(
+        {
+            "state": _to_host_array(observation.state),
+            "actions": np.asarray(actions),
+        }
+    )
+    return np.asarray(decoded["actions"], dtype=np.float32)
+
+
+def _make_heldout_plot(true_actions: np.ndarray, pred_actions: np.ndarray, *, max_timesteps: int):
+    import matplotlib.pyplot as plt
+
+    names = [
+        "left_0",
+        "left_1",
+        "left_2",
+        "left_3",
+        "left_4",
+        "left_5",
+        "left_gripper",
+        "right_0",
+        "right_1",
+        "right_2",
+        "right_3",
+        "right_4",
+        "right_5",
+        "right_gripper",
+    ]
+    dims = min(true_actions.shape[-1], pred_actions.shape[-1], len(names))
+    true_flat = true_actions.reshape(-1, true_actions.shape[-1])
+    pred_flat = pred_actions.reshape(-1, pred_actions.shape[-1])
+    timesteps = min(max(1, max_timesteps), true_flat.shape[0], pred_flat.shape[0])
+    true_flat = true_flat[:timesteps]
+    pred_flat = pred_flat[:timesteps]
+
+    fig, axes = plt.subplots(7, 2, figsize=(18, 22), sharex=True)
+    axes = axes.ravel()
+    xs = np.arange(timesteps)
+    for dim in range(dims):
+        ax = axes[dim]
+        ax.plot(xs, true_flat[:, dim], color="#1f77b4", linewidth=1.0, alpha=0.85)
+        ax.plot(xs, pred_flat[:, dim], color="#d62728", linestyle="--", linewidth=1.0, alpha=0.85)
+        ax.set_title(names[dim])
+        ax.grid(True, alpha=0.25)
+    axes[0].plot([], [], color="#1f77b4", label="expert action")
+    axes[0].plot([], [], color="#d62728", linestyle="--", label="model action")
+    axes[0].legend(loc="best")
+    fig.tight_layout()
+    return fig
+
+
+def log_heldout_eval(
+    *,
+    step: int,
+    config: _config.TrainConfig,
+    output_transform,
+    eval_batch: tuple[_model.Observation, _model.Actions],
+    pred_actions: np.ndarray,
+) -> dict[str, float]:
+    observation, true_actions_raw = eval_batch
+    true_actions = _decode_eval_actions(output_transform, observation, _to_host_array(true_actions_raw))
+    pred_actions = _decode_eval_actions(output_transform, observation, pred_actions)
+
+    samples = min(config.heldout_eval_samples, true_actions.shape[0], pred_actions.shape[0])
+    horizon = config.heldout_eval_horizon or min(true_actions.shape[1], pred_actions.shape[1])
+    horizon = min(horizon, true_actions.shape[1], pred_actions.shape[1])
+    dims = min(true_actions.shape[-1], pred_actions.shape[-1])
+    true_slice = true_actions[:samples, :horizon, :dims]
+    pred_slice = pred_actions[:samples, :horizon, :dims]
+    error = pred_slice - true_slice
+    mae_by_dim = np.mean(np.abs(error), axis=(0, 1))
+    rmse_by_dim = np.sqrt(np.mean(np.square(error), axis=(0, 1)))
+
+    payload: dict[str, Any] = {
+        "heldout_action/mae": float(np.mean(mae_by_dim)),
+        "heldout_action/rmse": float(np.mean(rmse_by_dim)),
+        "heldout_action/max_abs_error": float(np.max(np.abs(error))),
+    }
+    for dim, (mae, rmse) in enumerate(zip(mae_by_dim, rmse_by_dim, strict=False)):
+        payload[f"heldout_action_dim/{dim:02d}_mae"] = float(mae)
+        payload[f"heldout_action_dim/{dim:02d}_rmse"] = float(rmse)
+
+    fig = _make_heldout_plot(true_slice, pred_slice, max_timesteps=config.heldout_eval_compare_timesteps)
+    payload["heldout_action/trajectory_overlay"] = wandb.Image(fig)
+    wandb.log(payload, step=step)
+    try:
+        import matplotlib.pyplot as plt
+
+        plt.close(fig)
+    except Exception:
+        pass
+    return {key: value for key, value in payload.items() if isinstance(value, float)}
+
+
 def main(config: _config.TrainConfig):
     init_logging()
     logging.info(f"Running on: {platform.node()}")
@@ -228,6 +355,18 @@ def main(config: _config.TrainConfig):
         sharding=data_sharding,
         shuffle=True,
     )
+    heldout_eval_batch = None
+    heldout_output_transform = None
+    if config.heldout_eval_enabled:
+        heldout_loader = _data_loader.create_data_loader(
+            config,
+            sharding=data_sharding,
+            shuffle=False,
+            num_batches=1,
+        )
+        heldout_eval_batch = next(iter(heldout_loader))
+        heldout_output_transform = _make_output_transform(heldout_loader.data_config())
+        logging.info(f"Initialized held-out eval batch:\n{training_utils.array_tree_to_info(heldout_eval_batch)}")
     data_iter = iter(data_loader)
     batch = next(data_iter)
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
@@ -252,6 +391,12 @@ def main(config: _config.TrainConfig):
         out_shardings=(train_state_sharding, replicated_sharding),
         donate_argnums=(1,),
     )
+    pheldout_eval_step = jax.jit(
+        functools.partial(heldout_eval_step, config),
+        in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+        out_shardings=data_sharding,
+    )
+    heldout_eval_rng = jax.random.fold_in(train_rng, 12345)
 
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
@@ -272,6 +417,18 @@ def main(config: _config.TrainConfig):
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
             pbar.write(f"Step {step}: {info_str}")
             wandb.log(reduced_info, step=step)
+            if config.heldout_eval_enabled and heldout_eval_batch is not None and heldout_output_transform is not None:
+                with sharding.set_mesh(mesh):
+                    pred_actions = pheldout_eval_step(heldout_eval_rng, train_state, heldout_eval_batch)
+                eval_info = log_heldout_eval(
+                    step=step,
+                    config=config,
+                    output_transform=heldout_output_transform,
+                    eval_batch=heldout_eval_batch,
+                    pred_actions=_to_host_array(pred_actions),
+                )
+                eval_str = ", ".join(f"{k}={v:.4f}" for k, v in eval_info.items())
+                pbar.write(f"Step {step} heldout: {eval_str}")
             infos = []
         batch = next(data_iter)
 

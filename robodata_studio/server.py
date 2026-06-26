@@ -24,6 +24,7 @@ TRAINING_DATA_ROOT = STUDIO_DIR.parent.parent / "organ_data_le"
 CHECKPOINTS_ROOT = ROOT_DIR / "checkpoints"
 TRIM_SCRIPT = STUDIO_DIR / "trim_idle_edges_dataset.py"
 ATOMIC_SPLIT_SCRIPT = STUDIO_DIR / "split_lerobot_atomic_actions.py"
+BATCH_ATOMIC_SPLIT_SCRIPT = STUDIO_DIR / "batch_split_lerobot_atomic_actions.py"
 SINGLE_CONVERTER = ROOT_DIR / "examples" / "aloha_real" / "lzc_mod_convert_aloha_data_to_lerobot_robotwin.py"
 MERGED_CONVERTER = ROOT_DIR / "examples" / "aloha_real" / "convert_aloha_data_to_lerobot_robotwin_merged.py"
 
@@ -755,6 +756,92 @@ def run_atomic_split_job(job_id: str) -> None:
         update_job(job_id, status="failed", finishedAt=time.time(), returnCode=-1)
 
 
+def run_batch_atomic_split_job(job_id: str) -> None:
+    update_job(job_id, status="running", startedAt=time.time())
+    with _jobs_lock:
+        payload = dict(_jobs[job_id]["payload"])
+    try:
+        source_root = safe_external_dir(str(payload.get("sourceRoot") or ""))
+        output_root_text = str(payload.get("outputRoot") or "").strip()
+        if output_root_text:
+            output_root = safe_external_dir(output_root_text)
+        elif (source_root / "meta" / "info.json").exists():
+            output_root = source_root.parent
+        else:
+            output_root = source_root
+        repo_prefix = repo_component(str(payload.get("repoPrefix") or output_root.name or "atomic"))
+
+        command = [
+            sys.executable,
+            str(BATCH_ATOMIC_SPLIT_SCRIPT),
+            "--source-root",
+            str(source_root),
+            "--output-root",
+            str(output_root),
+            "--repo-prefix",
+            repo_prefix,
+            "--task-preset",
+            str(payload.get("taskPreset") or "solid"),
+            "--state-key",
+            str(payload.get("stateKey") or "observation.state"),
+            "--action-key",
+            str(payload.get("actionKey") or "action"),
+            "--joint-threshold",
+            str(float(payload.get("jointThreshold") or 0.035)),
+            "--min-home-ratio",
+            str(float(payload.get("minHomeRatio") or 0.65)),
+            "--fallback-home-ratio",
+            str(float(payload.get("fallbackHomeRatio") or 0.45)),
+            "--edge-home-ratio",
+            str(float(payload.get("edgeHomeRatio") or 0.65)),
+            "--search-radius",
+            str(int(payload.get("searchRadius") or 80)),
+            "--min-gap",
+            str(int(payload.get("minGap") or 20)),
+            "--min-edge-home-frames",
+            str(int(payload.get("minEdgeHomeFrames") or 5)),
+            "--keep-edge-home-frames",
+            str(int(payload.get("keepEdgeHomeFrames") or 0)),
+            "--min-segment-frames",
+            str(int(payload.get("minSegmentFrames") or 20)),
+            "--edge-state-velocity-threshold",
+            str(float(payload.get("edgeStateVelocityThreshold") or 0.02)),
+            "--overwrite",
+        ]
+        subtasks = str(payload.get("subtasks") or "").strip()
+        if subtasks:
+            command.extend(["--subtasks", subtasks])
+        if payload.get("skipFailedEpisodes"):
+            command.append("--skip-failed-episodes")
+        if not payload.get("splitVideos", True):
+            command.append("--no-split-videos")
+        if payload.get("videoKeys"):
+            command.extend(["--video-keys", str(payload["videoKeys"])])
+        if payload.get("losslessVideos", True):
+            command.append("--lossless-video")
+
+        code = run_command_for_job(job_id, command)
+        summary = load_json(output_root / f"{repo_prefix}_atomic_batch_split_summary.json", {})
+        if code == 0:
+            for item in summary.get("datasets", []):
+                dataset_root = str(item.get("dataset_root") or "").strip()
+                if dataset_root:
+                    register_dataset_path(dataset_root)
+        update_job(
+            job_id,
+            status="succeeded" if code == 0 else "failed",
+            finishedAt=time.time(),
+            returnCode=code,
+            command=command,
+            report=summary,
+            outputRepos=[str(item["dataset"]) for item in summary.get("datasets", []) if item.get("dataset")],
+            outputRoot=str(output_root),
+        )
+    except Exception as exc:
+        append_job_error(job_id, f"\n{exc}\n{traceback.format_exc()}")
+        update_job(job_id, status="failed", finishedAt=time.time(), returnCode=-1)
+
+
 @app.get("/")
 @app.get("/robodata_studio/")
 def index() -> Response:
@@ -1003,6 +1090,19 @@ def api_split_atomic() -> Response:
         abort(400, description="labelsJson is required")
     job_id = create_job("split-atomic", payload)
     thread = threading.Thread(target=run_atomic_split_job, args=(job_id,), daemon=True)
+    thread.start()
+    return jsonify({"jobId": job_id, "job": _jobs[job_id]})
+
+
+@app.post("/api/editor/batch-split-atomic")
+def api_batch_split_atomic() -> Response:
+    payload = request.get_json(force=True, silent=False) or {}
+    if not BATCH_ATOMIC_SPLIT_SCRIPT.exists():
+        abort(500, description=f"Missing batch atomic split script: {BATCH_ATOMIC_SPLIT_SCRIPT}")
+    if not str(payload.get("sourceRoot") or "").strip():
+        abort(400, description="sourceRoot is required")
+    job_id = create_job("batch-split-atomic", payload)
+    thread = threading.Thread(target=run_batch_atomic_split_job, args=(job_id,), daemon=True)
     thread.start()
     return jsonify({"jobId": job_id, "job": _jobs[job_id]})
 

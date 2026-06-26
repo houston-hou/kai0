@@ -225,6 +225,18 @@
               <input id="atomicOutputRootInput" type="text" placeholder="/path/to/output_parent">
             </label>
             <label>
+              <span>Multi dataset source root</span>
+              <input id="atomicBatchSourceRootInput" type="text" placeholder="/path/to/solid">
+            </label>
+            <label>
+              <span>Task preset</span>
+              <select id="atomicTaskPresetSelect">
+                <option value="solid">solid weighing</option>
+                <option value="liquid">liquid measuring</option>
+                <option value="mix_distill">mixed distillation</option>
+              </select>
+            </label>
+            <label>
               <span>State key</span>
               <input id="atomicStateKeyInput" type="text" value="observation.state">
             </label>
@@ -260,6 +272,7 @@
           <div class="inline-actions">
             <button id="suggestAtomicButton" type="button">Suggest Boundaries</button>
             <button id="startAtomicSplitButton" type="button">Generate Atomic Datasets</button>
+            <button id="startAtomicBatchSplitButton" type="button">Batch Split Multi Dataset</button>
           </div>
           <div id="atomicKeyframeList" class="keyframe-list"></div>
           <div id="atomicSegmentEditor" class="segment-editor"></div>

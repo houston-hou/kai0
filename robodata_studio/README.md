@@ -7,9 +7,54 @@ This directory contains the Studio server, UI, and the data-processing scripts i
 - `server.py`: local Studio API and static-file server.
 - `trim_idle_edges_dataset.py`: trim leading/trailing idle frames and matching video frames.
 - `split_lerobot_atomic_actions.py`: export manually labeled `[start, end)` ranges as atomic LeRobot datasets.
+- `batch_split_lerobot_atomic_actions.py`: discover one or more LeRobot datasets under a task folder, detect return-home atomic boundaries, trim each atomic segment, and export one dataset per atomic action.
 - `inference_parquet.py`: reusable writer for inference-request traces.
 - `agilex_inference_record_parquet.py`: independent AgileX client-side inference entrypoint with trace recording.
 - `evaluate_lerobot_policy_actions.py`: feed LeRobot observations to a running policy server and plot predicted-vs-recorded actions.
+
+## Batch atomic splitting
+
+For task folders that contain multiple independent LeRobot datasets, run:
+
+```bash
+python robodata_studio/batch_split_lerobot_atomic_actions.py \
+  --source-root /path/to/solid \
+  --output-root /path/to/solid \
+  --repo-prefix solid \
+  --task-preset solid \
+  --overwrite \
+  --skip-failed-episodes
+```
+
+The script assumes each episode returns to its initial joint pose after every atomic action. It detects boundaries by looking for frames where most state joints are close to the initial home pose, then trims extra return-home/idle frames at the start and end of each subtask. Output is grouped by action:
+
+```text
+solid/
+  day_1_lerobot/
+  day_2_lerobot/
+  solid_pick_funnel_to_reactor/
+  solid_pick_weighing_boat_to_balance/
+  solid_press_tare_button/
+  solid_scoop_solid_to_weighing_boat/
+  solid_pour_solid_to_reactor/
+```
+
+Available presets:
+
+- `liquid`: beaker to graduated cylinder, graduated cylinder to reactor.
+- `solid`: funnel to reactor, weighing boat to balance, tare button, scoop solid, pour solid to reactor.
+- `mix_distill`: return funnel to rack, place distillation rack, turn reactor knob.
+
+To override prompts or action order, pass ordered lines:
+
+```bash
+python robodata_studio/batch_split_lerobot_atomic_actions.py \
+  --source-root /path/to/liquid \
+  --repo-prefix liquid \
+  --subtasks "beaker_to_graduated_cylinder | pour solution from the beaker into the graduated cylinder
+graduated_cylinder_to_reactor | pour solution from the graduated cylinder into the reactor" \
+  --overwrite
+```
 
 ## Recorded inference
 
