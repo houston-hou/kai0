@@ -3,23 +3,45 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Migrate a pi05 action-expert checkpoint to a merged pi05-base checkpoint.
+Export and merge pi05 action-expert checkpoints.
 
-Run this on the target machine that has the trained checkpoint and pi05 base
-params. If a reverse SSH tunnel is open, the script can first refresh the
-Python merge helper from the laptop-side repository.
+Use --mode export on the machine that holds the trained checkpoint, then copy the
+small export package to the machine that holds pi05_base, and use --mode merge
+there. Use --mode full only when trained checkpoint and pi05_base are on the same
+machine.
 
-Example:
+Export on lin:
   bash scripts/migrate_pi05_action_expert_checkpoint.sh \
-    --trained-checkpoint ~/checkpoints/boil_agilex_action_expert \
-    --output-name boil_agilex_action_expert_merged \
-    --asset-id boil_agilex
+    --mode export \
+    --trained-checkpoint /mnt/hdy/kai0/checkpoints/beaker2cylinder_agilex \
+    --output-name beaker2cylinder_agilex_export \
+    --asset-id beaker2cylinder_agilex \
+    --include-img \
+    --overwrite
 
-Common options:
+Copy export package from lin to gxl, for example:
+  rsync -avP -e "ssh -p 2222" \
+    ~/checkpoints/beaker2cylinder_agilex_export \
+    hdy@127.0.0.1:~/checkpoints/
+
+Merge on gxl:
+  bash scripts/migrate_pi05_action_expert_checkpoint.sh \
+    --mode merge \
+    --export-package ~/checkpoints/beaker2cylinder_agilex_export \
+    --output-name beaker2cylinder_agilex_merged \
+    --asset-id beaker2cylinder_agilex \
+    --include-img \
+    --overwrite \
+    --skip-sync
+
+Options:
+  --mode MODE                 export, merge, or full. Default: full.
   --trained-checkpoint PATH   Trained checkpoint step dir, params dir parent,
                               or experiment dir containing numeric step dirs.
+  --export-package PATH       Export package dir. In export mode this is the
+                              output package; in merge mode this is the input.
   --output-name NAME          Output directory name under --output-root.
-  --asset-id NAME             Required asset id for policy norm stats.
+  --asset-id NAME             Asset id for policy norm stats.
   --include-img               Also migrate PaliGemma/img params.
   --overwrite                 Replace existing export/output dirs.
   --skip-sync                 Do not rsync helper from the reverse tunnel.
@@ -85,7 +107,43 @@ run_python_helper() {
   fi
 }
 
+sync_helper() {
+  if [[ "$skip_sync" -eq 1 ]]; then
+    return
+  fi
+  mkdir -p "$repo_dir/scripts"
+  echo "Syncing helper from ${source_ssh}:${source_repo}/scripts/pi05_action_expert_checkpoint.py"
+  rsync -avP -e "ssh -p ${source_port}" \
+    "${source_ssh}:${source_repo}/scripts/pi05_action_expert_checkpoint.py" \
+    "$helper"
+}
+
+remove_if_overwrite() {
+  local path="$1"
+  if [[ -e "$path" ]]; then
+    if [[ "$overwrite" -ne 1 ]]; then
+      echo "Path already exists: $path. Pass --overwrite to replace it." >&2
+      exit 1
+    fi
+    rm -rf "$path"
+  fi
+}
+
+copy_assets() {
+  local src_assets="$1"
+  local dst_root="$2"
+  if [[ ! -d "$src_assets/$asset_id" ]]; then
+    echo "Assets not found: $src_assets/$asset_id" >&2
+    echo "Pass --assets-source if assets live outside the selected checkpoint step." >&2
+    exit 1
+  fi
+  mkdir -p "$dst_root/assets"
+  rsync -a --delete "$src_assets/$asset_id/" "$dst_root/assets/$asset_id/"
+}
+
+mode="full"
 trained_checkpoint=""
+export_package=""
 output_name=""
 asset_id=""
 base_params="~/.cache/openpi/openpi-assets/checkpoints/pi05_base/params"
@@ -95,15 +153,22 @@ source_repo="/home/hdy/VLA/emchem_pi05"
 source_ssh="hdy@127.0.0.1"
 source_port="2222"
 assets_source=""
-export_root="/tmp"
 include_img=0
 overwrite=0
 skip_sync=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --mode)
+      mode="$2"
+      shift 2
+      ;;
     --trained-checkpoint|--train-checkpoint)
       trained_checkpoint="$2"
+      shift 2
+      ;;
+    --export-package)
+      export_package="$2"
       shift 2
       ;;
     --output-name)
@@ -142,10 +207,6 @@ while [[ $# -gt 0 ]]; do
       assets_source="$2"
       shift 2
       ;;
-    --export-root)
-      export_root="$2"
-      shift 2
-      ;;
     --include-img)
       include_img=1
       shift
@@ -170,57 +231,26 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-require_arg "--trained-checkpoint" "$trained_checkpoint"
-require_arg "--output-name" "$output_name"
-require_arg "--asset-id" "$asset_id"
+case "$mode" in
+  export|merge|full) ;;
+  *)
+    echo "Invalid --mode: $mode. Expected export, merge, or full." >&2
+    exit 2
+    ;;
+esac
 
-trained_checkpoint="$(expand_path "$trained_checkpoint")"
 base_params="$(expand_path "$base_params")"
 output_root="$(expand_path "$output_root")"
 repo_dir="$(expand_path "$repo_dir")"
-export_root="$(expand_path "$export_root")"
+helper="$repo_dir/scripts/pi05_action_expert_checkpoint.py"
+if [[ -n "$trained_checkpoint" ]]; then
+  trained_checkpoint="$(expand_path "$trained_checkpoint")"
+fi
+if [[ -n "$export_package" ]]; then
+  export_package="$(expand_path "$export_package")"
+fi
 if [[ -n "$assets_source" ]]; then
   assets_source="$(expand_path "$assets_source")"
-fi
-
-helper="$repo_dir/scripts/pi05_action_expert_checkpoint.py"
-step_dir="$(find_checkpoint_step_dir "$trained_checkpoint")"
-trained_params="$step_dir/params"
-if [[ -z "$assets_source" ]]; then
-  assets_source="$step_dir/assets"
-fi
-output_dir="$output_root/$output_name"
-export_dir="$export_root/${output_name}_selected_params"
-
-if [[ ! -d "$base_params" ]]; then
-  echo "Base params not found: $base_params" >&2
-  exit 1
-fi
-if [[ ! -d "$trained_params" ]]; then
-  echo "Trained params not found: $trained_params" >&2
-  exit 1
-fi
-if [[ ! -d "$assets_source/$asset_id" ]]; then
-  echo "Assets not found: $assets_source/$asset_id" >&2
-  echo "Pass --assets-source if assets live outside the selected checkpoint step." >&2
-  exit 1
-fi
-if [[ -e "$output_dir" && "$overwrite" -ne 1 ]]; then
-  echo "Output already exists: $output_dir. Pass --overwrite to replace it." >&2
-  exit 1
-fi
-if [[ -e "$export_dir" && "$overwrite" -ne 1 ]]; then
-  echo "Export dir already exists: $export_dir. Pass --overwrite to replace it." >&2
-  exit 1
-fi
-
-mkdir -p "$repo_dir/scripts" "$output_root" "$export_root"
-
-if [[ "$skip_sync" -ne 1 ]]; then
-  echo "Syncing helper from ${source_ssh}:${source_repo}/scripts/pi05_action_expert_checkpoint.py"
-  rsync -avP -e "ssh -p ${source_port}" \
-    "${source_ssh}:${source_repo}/scripts/pi05_action_expert_checkpoint.py" \
-    "$helper"
 fi
 
 include_args=()
@@ -230,32 +260,98 @@ fi
 overwrite_args=()
 if [[ "$overwrite" -eq 1 ]]; then
   overwrite_args+=(--overwrite)
-  rm -rf "$export_dir" "$output_dir"
 fi
 
-echo "Selected checkpoint step: $step_dir"
-echo "Exporting selected params to: $export_dir"
-run_python_helper "$helper" export \
-  --params "$trained_params" \
-  --output "$export_dir" \
-  "${include_args[@]}" \
-  "${overwrite_args[@]}"
+if [[ "$mode" == "export" || "$mode" == "full" ]]; then
+  require_arg "--trained-checkpoint" "$trained_checkpoint"
+  require_arg "--asset-id" "$asset_id"
+  if [[ -z "$export_package" ]]; then
+    if [[ "$mode" == "full" ]]; then
+      require_arg "--output-name" "$output_name"
+      export_package="${TMPDIR:-/tmp}/${output_name}_export_package"
+    else
+      require_arg "--output-name" "$output_name"
+      export_package="$output_root/$output_name"
+    fi
+  fi
 
-echo "Merging into pi05 base params: $output_dir/params"
-run_python_helper "$helper" merge \
-  --base-params "$base_params" \
-  --expert-params "$export_dir" \
-  --output "$output_dir/params" \
-  "${include_args[@]}" \
-  "${overwrite_args[@]}"
+  step_dir="$(find_checkpoint_step_dir "$trained_checkpoint")"
+  trained_params="$step_dir/params"
+  if [[ -z "$assets_source" ]]; then
+    assets_source="$step_dir/assets"
+  fi
+  if [[ ! -d "$trained_params" ]]; then
+    echo "Trained params not found: $trained_params" >&2
+    exit 1
+  fi
 
-echo "Copying assets: $assets_source/$asset_id -> $output_dir/assets/$asset_id"
-mkdir -p "$output_dir/assets"
-rsync -a --delete "$assets_source/$asset_id/" "$output_dir/assets/$asset_id/"
+  sync_helper
+  remove_if_overwrite "$export_package"
+  mkdir -p "$export_package"
 
-cat <<EOF
+  echo "Selected checkpoint step: $step_dir"
+  echo "Exporting selected params to: $export_package/params"
+  run_python_helper "$helper" export \
+    --params "$trained_params" \
+    --output "$export_package/params" \
+    "${include_args[@]}" \
+    "${overwrite_args[@]}"
+
+  echo "Copying assets: $assets_source/$asset_id -> $export_package/assets/$asset_id"
+  copy_assets "$assets_source" "$export_package"
+  printf '%s\n' "$step_dir" > "$export_package/source_step.txt"
+
+  if [[ "$mode" == "export" ]]; then
+    cat <<EOF
+Done.
+Export package: $export_package
+Copy this directory to the pi05-base machine, then run --mode merge.
+EOF
+    exit 0
+  fi
+fi
+
+if [[ "$mode" == "merge" || "$mode" == "full" ]]; then
+  require_arg "--asset-id" "$asset_id"
+  require_arg "--output-name" "$output_name"
+  if [[ -z "$export_package" && "$mode" == "merge" ]]; then
+    echo "Missing required argument: --export-package" >&2
+    usage >&2
+    exit 2
+  fi
+  output_dir="$output_root/$output_name"
+
+  if [[ ! -d "$base_params" ]]; then
+    echo "Base params not found: $base_params" >&2
+    exit 1
+  fi
+  if [[ ! -d "$export_package/params" ]]; then
+    echo "Exported params not found: $export_package/params" >&2
+    exit 1
+  fi
+  if [[ ! -d "$export_package/assets/$asset_id" ]]; then
+    echo "Exported assets not found: $export_package/assets/$asset_id" >&2
+    exit 1
+  fi
+
+  sync_helper
+  remove_if_overwrite "$output_dir"
+
+  echo "Merging into pi05 base params: $output_dir/params"
+  run_python_helper "$helper" merge \
+    --base-params "$base_params" \
+    --expert-params "$export_package/params" \
+    --output "$output_dir/params" \
+    "${include_args[@]}" \
+    "${overwrite_args[@]}"
+
+  echo "Copying assets: $export_package/assets/$asset_id -> $output_dir/assets/$asset_id"
+  copy_assets "$export_package/assets" "$output_dir"
+
+  cat <<EOF
 Done.
 Merged checkpoint: $output_dir
 Use with serve_policy:
   uv run scripts/serve_policy.py policy:checkpoint --policy.config=<matching_config> --policy.dir=$output_dir
 EOF
+fi
