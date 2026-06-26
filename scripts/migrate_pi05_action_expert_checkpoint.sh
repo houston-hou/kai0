@@ -21,7 +21,7 @@ Export on lin:
 
 Copy export package from lin to gxl, for example:
   rsync -avP -e "ssh -p 2222" \
-    ~/checkpoints/beaker2cylinder_agilex_export \
+    /mnt/hdy/kai0/checkpoints/beaker2cylinder_agilex_export \
     hdy@127.0.0.1:~/checkpoints/
 
 Merge on gxl:
@@ -48,7 +48,7 @@ Options:
 
 Defaults:
   --base-params ~/.cache/openpi/openpi-assets/checkpoints/pi05_base/params
-  --output-root ~/checkpoints
+  --output-root /mnt/hdy/kai0/checkpoints in export mode, ~/checkpoints otherwise
   --repo-dir /mnt/hdy/kai0
   --source-repo /home/hdy/VLA/emchem_pi05
   --source-ssh hdy@127.0.0.1
@@ -147,7 +147,7 @@ export_package=""
 output_name=""
 asset_id=""
 base_params="~/.cache/openpi/openpi-assets/checkpoints/pi05_base/params"
-output_root="~/checkpoints"
+output_root=""
 repo_dir="/mnt/hdy/kai0"
 source_repo="/home/hdy/VLA/emchem_pi05"
 source_ssh="hdy@127.0.0.1"
@@ -240,6 +240,13 @@ case "$mode" in
 esac
 
 base_params="$(expand_path "$base_params")"
+if [[ -z "$output_root" ]]; then
+  if [[ "$mode" == "export" ]]; then
+    output_root="/mnt/hdy/kai0/checkpoints"
+  else
+    output_root="~/checkpoints"
+  fi
+fi
 output_root="$(expand_path "$output_root")"
 repo_dir="$(expand_path "$repo_dir")"
 helper="$repo_dir/scripts/pi05_action_expert_checkpoint.py"
