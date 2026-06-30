@@ -233,22 +233,11 @@ function renderFeatureOptions(keys) {
     option.textContent = key;
     select.appendChild(option);
   });
-  if (keys.includes("action")) {
-    [
-      ["action::left", "action left"],
-      ["action::right", "action right"],
-    ].forEach(([value, label]) => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = label;
-      select.appendChild(option);
-    });
-  }
   const available = Array.from(select.options).map((option) => option.value);
   currentFeature = available.includes(previous)
     ? previous
-    : available.includes("action::left")
-      ? "action::left"
+    : available.includes("action")
+      ? "action"
       : keys[0] || null;
   select.value = currentFeature || "";
 }
@@ -377,20 +366,27 @@ function renderCurrentRow() {
     }
     return [key, value];
   }));
-  $("#rowJson").textContent = JSON.stringify({ ...row, ...text }, null, 2);
+  const featureValues = currentFeature ? featureRow(currentSeries, currentFeature, currentRow) : [];
+  const featureNames = featureDimNames(currentFeature);
+  const namedFeature = featureValues.map((value, index) => ({
+    index,
+    name: featureNames[index] || `dim ${index}`,
+    value,
+  }));
+  $("#rowJson").textContent = JSON.stringify({ ...row, ...text, selectedFeature: currentFeature, selectedFeatureValues: namedFeature }, null, 2);
   renderReplayPanel();
 }
 
 function currentFeatureSeries() {
   if (!currentSeries || !currentFeature) return [];
-  if (currentFeature === "action::left" || currentFeature === "action::right") {
-    const rows = currentSeries.featureData?.action || [];
-    return rows.map((row) => {
-      const midpoint = Math.ceil((row?.length || 0) / 2);
-      return currentFeature === "action::left" ? row.slice(0, midpoint) : row.slice(midpoint);
-    });
-  }
   return currentSeries.featureData?.[currentFeature] || [];
+}
+
+function featureDimNames(key) {
+  if (!key) return [];
+  const names = currentSeries?.featureMeta?.[key]?.names || [];
+  const width = currentSeries?.featureData?.[key]?.[0]?.length || names.length || 0;
+  return Array.from({ length: width }, (_, index) => names[index] || `dim ${index}`);
 }
 
 function drawFeatureCanvas() {
@@ -414,7 +410,7 @@ function drawFeatureCanvas() {
     return;
   }
 
-  const dims = Math.min(rows[0]?.length || 1, 7);
+  const dims = rows[0]?.length || 1;
   const values = [];
   for (let dim = 0; dim < dims; dim += 1) {
     rows.forEach((row) => values.push(Number(row?.[dim])));
@@ -426,7 +422,7 @@ function drawFeatureCanvas() {
   const pad = 24;
   const x = (index) => pad + (index / Math.max(rows.length - 1, 1)) * (width - pad * 2);
   const y = (value) => height - pad - ((value - min) / span) * (height - pad * 2);
-  const colors = ["#0f766e", "#2563eb", "#dc2626", "#7c3aed", "#b45309", "#0891b2", "#475569"];
+  const colors = ["#0f766e", "#2563eb", "#dc2626", "#7c3aed", "#b45309", "#0891b2", "#475569", "#be185d", "#16a34a", "#4f46e5", "#ea580c", "#64748b", "#0e7490", "#9333ea"];
 
   ctx.strokeStyle = "#dbe4e1";
   ctx.beginPath();
@@ -458,7 +454,8 @@ function drawFeatureCanvas() {
   ctx.lineTo(cursorX, height - pad);
   ctx.stroke();
 
-  $("#featureStatus").textContent = `${currentFeature} · ${rows.length} rows · ${dims} dims shown`;
+  const names = featureDimNames(currentFeature).slice(0, dims);
+  $("#featureStatus").textContent = `${currentFeature} · ${rows.length} rows · ${dims} dims · ${names.map((name, index) => `${index}:${name}`).join("  ")}`;
 }
 
 function replayAvailable(series = currentSeries) {
@@ -467,8 +464,7 @@ function replayAvailable(series = currentSeries) {
 }
 
 function actionNames() {
-  const width = currentSeries?.featureData?.action?.[0]?.length || 0;
-  return Array.from({ length: width }, (_, index) => `dim ${index}`);
+  return featureDimNames("action");
 }
 
 function renderReplayControls() {
@@ -540,7 +536,7 @@ function renderReplayPanel() {
     const row = document.createElement("tr");
     if (index === replayDim) row.className = "selected-row";
     row.innerHTML = `
-      <td>${index}</td>
+      <td>${index} · ${escapeHtml(actionNames()[index] || `dim ${index}`)}</td>
       <td>${formatNumber(action[index])}</td>
       <td>${formatNumber(expert[index])}</td>
       <td>${formatNumber(error[index])}</td>
@@ -1060,6 +1056,11 @@ function atomicBatchPayload() {
     edgeHomeRatio: 0.65,
     searchRadius: Number($("#atomicSearchRadiusInput").value) || 80,
     minGap: Number($("#atomicMinGapInput").value) || 20,
+    homeIgnoreDims: $("#atomicHomeIgnoreDimsInput")?.value.trim() || "",
+    inactiveArm: $("#atomicInactiveArmSelect")?.value || "",
+    activeArm: "",
+    tailIgnoreFrames: Number($("#atomicTailIgnoreFramesInput")?.value) || 120,
+    boundarySelection: "ordered",
     minEdgeHomeFrames: 5,
     keepEdgeHomeFrames: 0,
     minSegmentFrames: 20,
@@ -1067,6 +1068,8 @@ function atomicBatchPayload() {
     splitVideos: $("#atomicSplitVideosInput").checked,
     losslessVideos: $("#atomicLosslessVideosInput").checked,
     videoKeys: $("#atomicVideoKeysInput").value.trim(),
+    videoWorkers: Number($("#atomicVideoWorkersInput")?.value) || 1,
+    ffmpegThreads: Number($("#atomicFfmpegThreadsInput")?.value) || 0,
     skipFailedEpisodes: true,
   };
 }
@@ -1098,7 +1101,8 @@ async function addDatasetPath() {
     const saved = savedDatasetPaths();
     localStorage.setItem("robodataDatasetPaths", JSON.stringify(Array.from(new Set([...saved, path]))));
     $("#datasetPathInput").value = "";
-    await loadCatalog(payload.dataset.id);
+    const preferred = payload.dataset?.id || payload.datasets?.[0]?.id || null;
+    await loadCatalog(preferred);
   } catch (error) {
     $("#datasetPathInput").value = path;
     $("#dashboardDatasetList").textContent = error.message;

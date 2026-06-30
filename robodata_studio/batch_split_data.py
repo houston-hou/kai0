@@ -199,6 +199,52 @@ def _parse_dim_indices(text: str, width: int) -> set[int]:
             indices.add(index)
     return indices
 
+
+def _feature_dim_names(info: dict[str, Any], key: str) -> list[str]:
+    names = ((info.get("features") or {}).get(key) or {}).get("names")
+    if isinstance(names, list) and names and isinstance(names[0], list):
+        return [str(item) for item in names[0]]
+    if isinstance(names, list):
+        return [str(item) for item in names]
+    return []
+
+
+def _arm_dims(names: list[str], width: int, arm: str) -> set[int]:
+    arm = arm.strip().lower()
+    if arm not in {"left", "right"}:
+        return set()
+    if names:
+        prefix = f"{arm}_"
+        return {index for index, name in enumerate(names[:width]) if str(name).lower().startswith(prefix)}
+    if width == 14:
+        return set(range(0, 7)) if arm == "left" else set(range(7, 14))
+    midpoint = width // 2
+    return set(range(0, midpoint)) if arm == "left" else set(range(midpoint, width))
+
+
+def _ignored_dims(info: dict[str, Any], key: str, args: argparse.Namespace, width: int) -> set[int]:
+    ignore = _parse_dim_indices(args.home_ignore_dims, width)
+    names = _feature_dim_names(info, key)
+    inactive_arm = str(getattr(args, "inactive_arm", "") or "").strip().lower()
+    active_arm = str(getattr(args, "active_arm", "") or "").strip().lower()
+    if inactive_arm in {"left", "right"}:
+        ignore.update(_arm_dims(names, width, inactive_arm))
+    if active_arm in {"left", "right"}:
+        other = "right" if active_arm == "left" else "left"
+        ignore.update(_arm_dims(names, width, other))
+    return {dim for dim in ignore if 0 <= dim < width}
+
+
+def _active_diffs(left: list[float], right: list[float], ignore_dims: set[int] | None = None) -> list[float]:
+    width = min(len(left), len(right))
+    ignored = ignore_dims or set()
+    return [left[dim] - right[dim] for dim in range(width) if dim not in ignored]
+
+
+def _active_values(values: list[float], ignore_dims: set[int] | None = None) -> list[float]:
+    ignored = ignore_dims or set()
+    return [value for dim, value in enumerate(values) if dim not in ignored]
+
 def _row_vector(row: dict[str, Any], key: str) -> list[float]:
     value = row.get(key)
     if value is None:
@@ -238,11 +284,10 @@ def _home_ratio(state: list[float], home_pose: list[float], threshold: float, ig
     return close / len(dims)
 
 
-def _state_velocity(states: list[list[float]], index: int) -> float:
+def _state_velocity(states: list[list[float]], index: int, ignore_dims: set[int] | None = None) -> float:
     if index <= 0:
         return 0.0
-    width = min(len(states[index]), len(states[index - 1]))
-    return _norm([states[index][dim] - states[index - 1][dim] for dim in range(width)])
+    return _norm(_active_diffs(states[index], states[index - 1], ignore_dims))
 
 
 def _segment_edge_mask(
@@ -259,12 +304,12 @@ def _segment_edge_mask(
     mask: list[bool] = []
     for index, state in enumerate(states):
         near_home = _home_ratio(state, home_pose, joint_threshold, home_ignore_dims) >= min_home_ratio
-        state_idle = state_velocity_threshold <= 0 or _state_velocity(states, index) <= state_velocity_threshold
+        state_idle = state_velocity_threshold <= 0 or _state_velocity(states, index, home_ignore_dims) <= state_velocity_threshold
         action_idle = (
             action_idle_threshold <= 0
             or index >= len(actions)
             or not actions[index]
-            or _norm(actions[index]) <= action_idle_threshold
+            or _norm(_active_values(actions[index], home_ignore_dims)) <= action_idle_threshold
         )
         mask.append(near_home and state_idle and action_idle)
     return mask
@@ -286,6 +331,7 @@ def _trim_segment_bounds(
     states: list[list[float]],
     actions: list[list[float]],
     home_pose: list[float],
+    ignore_dims: set[int],
     args: argparse.Namespace,
 ) -> tuple[int, int, int, int]:
     segment_states = states[raw_start:raw_end]
@@ -293,7 +339,6 @@ def _trim_segment_bounds(
     if not segment_states:
         return raw_start, raw_end, 0, 0
     
-    home_ignore_dims = _parse_dim_indices(args.home_ignore_dims, len(home_pose))
     mask = _segment_edge_mask(
         segment_states,
         segment_actions,
@@ -302,7 +347,7 @@ def _trim_segment_bounds(
         min_home_ratio=args.edge_home_ratio,
         state_velocity_threshold=args.edge_state_velocity_threshold,
         action_idle_threshold=args.edge_action_idle_threshold,
-        home_ignore_dims=home_ignore_dims,
+        home_ignore_dims=ignore_dims,
     )
     leading = _edge_count(mask, leading=True)
     trailing = _edge_count(mask, leading=False)
@@ -387,6 +432,7 @@ def _score_boundaries(
     states: list[list[float]],
     actions: list[list[float]],
     specs: list[SubtaskSpec],
+    ignore_dims: set[int],
     args: argparse.Namespace,
 ) -> tuple[list[int], list[float]]:
     if not states:
@@ -397,12 +443,12 @@ def _score_boundaries(
         return [], []
 
     home_pose = _mean_pose(states, args.home_window)
-    home_ignore_dims = _parse_dim_indices(args.home_ignore_dims, len(home_pose))
 
     stride = max(1, int(args.boundary_sample_stride))
     margin = max(args.margin, args.min_gap)
     sample_start = margin
-    sample_end = max(sample_start, len(states) - margin)
+    tail_ignore = max(0, int(getattr(args, "tail_ignore_frames", 0) or 0))
+    sample_end = max(sample_start, len(states) - max(margin, tail_ignore))
 
     if sample_end <= sample_start:
         return [], []
@@ -410,9 +456,9 @@ def _score_boundaries(
     samples: list[dict[str, float]] = []
     for index in range(sample_start, sample_end, stride):
         state = states[index]
-        action_norm = _norm(actions[index]) if index < len(actions) and actions[index] else 0.0
-        velocity = _state_velocity(states, index)
-        ratio = _home_ratio(state, home_pose, args.joint_threshold, home_ignore_dims)
+        action_norm = _norm(_active_values(actions[index], ignore_dims)) if index < len(actions) and actions[index] else 0.0
+        velocity = _state_velocity(states, index, ignore_dims)
+        ratio = _home_ratio(state, home_pose, args.joint_threshold, ignore_dims)
         score = ratio - min(velocity, 1.0) * 0.35 - min(action_norm, 1.0) * 0.15
 
         samples.append(
@@ -483,6 +529,8 @@ def _score_boundaries(
     # Do not close a trailing home interval.
     # The final return-to-home after the last task is not a boundary.
 
+    intervals = [item for item in intervals if int(item["end"]) < sample_end]
+
     if len(intervals) < needed:
         raise RuntimeError(
             f"Found {len(intervals)} high-score boundary intervals, expected at least {needed}. "
@@ -491,18 +539,66 @@ def _score_boundaries(
             f"or reducing --boundary-sample-stride."
         )
 
-    selected = sorted(
-        intervals,
-        key=lambda item: (
-            item["score"],
-            item["peak_score"],
-            item["home_ratio"],
-            item["duration"],
-        ),
-        reverse=True,
-    )[:needed]
+    selected: list[dict[str, float]] = []
+    used: set[int] = set()
+    selection = str(getattr(args, "boundary_selection", "ordered") or "ordered").strip().lower()
+    if selection == "top":
+        selected = sorted(
+            intervals,
+            key=lambda item: (
+                item["score"],
+                item["peak_score"],
+                item["home_ratio"],
+                item["duration"],
+            ),
+            reverse=True,
+        )[:needed]
+        selected.sort(key=lambda item: item["center"])
+    else:
+        for transition_index in range(1, len(specs)):
+            target = round(len(states) * transition_index / len(specs))
+            search_start = max(sample_start, target - args.search_radius)
+            search_end = min(sample_end, target + args.search_radius)
+            window = [
+                (index, item)
+                for index, item in enumerate(intervals)
+                if index not in used and search_start <= int(item["center"]) <= search_end
+            ]
+            if window:
+                chosen_index, chosen = max(
+                    window,
+                    key=lambda pair: (
+                        pair[1]["score"],
+                        pair[1]["peak_score"],
+                        pair[1]["home_ratio"],
+                        pair[1]["duration"],
+                        -abs(int(pair[1]["center"]) - target),
+                    ),
+                )
+            else:
+                window = [
+                    (index, item)
+                    for index, item in enumerate(intervals)
+                    if index not in used
+                ]
+                if not window:
+                    continue
+                chosen_index, chosen = max(
+                    window,
+                    key=lambda pair: (
+                        -abs(int(pair[1]["center"]) - target),
+                        pair[1]["score"],
+                        pair[1]["peak_score"],
+                        pair[1]["home_ratio"],
+                        pair[1]["duration"],
+                    ),
+                )
+            used.add(chosen_index)
+            selected.append(chosen)
+        selected.sort(key=lambda item: item["center"])
 
-    selected.sort(key=lambda item: item["center"])
+    if len(selected) != needed:
+        raise RuntimeError(f"Selected {len(selected)} boundaries, expected {needed}. Try increasing --search-radius.")
 
     boundaries = [int(item["center"]) for item in selected]
     confidences = [float(item["home_ratio"]) for item in selected]
@@ -523,7 +619,8 @@ def _episode_segments(
         raise KeyError(f"{source.root} episode {episode['episode_index']} missing numeric state key {args.state_key!r}")
     actions = [_row_vector(row, args.action_key) for row in rows]
     home_pose = _mean_pose(states, args.home_window)
-    boundaries, confidences = _score_boundaries(states, actions, specs, args)
+    ignore_dims = _ignored_dims(source.info, args.state_key, args, len(home_pose))
+    boundaries, confidences = _score_boundaries(states, actions, specs, ignore_dims, args)
     if len(boundaries) != len(specs) - 1:
         raise RuntimeError(
             f"{source.root.name} episode={episode['episode_index']} found {len(boundaries)} boundaries, "
@@ -536,7 +633,7 @@ def _episode_segments(
     for index, spec in enumerate(specs):
         raw_start = raw_bounds[index]
         raw_end = raw_bounds[index + 1]
-        start, end, trimmed_start, trimmed_end = _trim_segment_bounds(raw_start, raw_end, states, actions, home_pose, args)
+        start, end, trimmed_start, trimmed_end = _trim_segment_bounds(raw_start, raw_end, states, actions, home_pose, ignore_dims, args)
         if end <= start:
             continue
         plans.append(
@@ -923,7 +1020,31 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--home-ignore-dims",
         default="",
-        help="Comma-separated state dimensions ignored only for home_ratio, e.g. -1 to ignore gripper.",
+        help="Comma-separated state/action dimensions ignored for home ratio, velocity, and action norm.",
+    )
+    parser.add_argument(
+        "--inactive-arm",
+        default="",
+        choices=["", "left", "right"],
+        help="Ignore one unused arm when detecting return-home boundaries.",
+    )
+    parser.add_argument(
+        "--active-arm",
+        default="",
+        choices=["", "left", "right"],
+        help="Only use one active arm when detecting return-home boundaries.",
+    )
+    parser.add_argument(
+        "--tail-ignore-frames",
+        type=int,
+        default=120,
+        help="Ignore this many frames at the end so the final return-home pose is not selected as a boundary.",
+    )
+    parser.add_argument(
+        "--boundary-selection",
+        default="ordered",
+        choices=["ordered", "top"],
+        help="ordered selects one boundary near each expected transition; top keeps the old global top-score behavior.",
     )
     parser.add_argument(
         "--boundary-sample-stride",

@@ -24,7 +24,7 @@ TRAINING_DATA_ROOT = STUDIO_DIR.parent.parent / "organ_data_le"
 CHECKPOINTS_ROOT = ROOT_DIR / "checkpoints"
 TRIM_SCRIPT = STUDIO_DIR / "trim_idle_edges_dataset.py"
 ATOMIC_SPLIT_SCRIPT = STUDIO_DIR / "split_lerobot_atomic_actions.py"
-BATCH_ATOMIC_SPLIT_SCRIPT = STUDIO_DIR / "batch_split_lerobot_atomic_actions.py"
+BATCH_ATOMIC_SPLIT_SCRIPT = STUDIO_DIR / "batch_split_data.py"
 SINGLE_CONVERTER = ROOT_DIR / "examples" / "aloha_real" / "lzc_mod_convert_aloha_data_to_lerobot_robotwin.py"
 MERGED_CONVERTER = ROOT_DIR / "examples" / "aloha_real" / "convert_aloha_data_to_lerobot_robotwin_merged.py"
 
@@ -123,6 +123,32 @@ def register_dataset_path(path_text: str) -> tuple[str, Path]:
     with _dataset_roots_lock:
         _dataset_roots[dataset_id] = root
     return dataset_id, root
+
+
+def discover_lerobot_dataset_paths(path_text: str) -> list[Path]:
+    root = safe_external_dir(path_text)
+    if (root / "meta" / "info.json").is_file():
+        return [root]
+    if not root.exists():
+        raise FileNotFoundError(root)
+    datasets = [
+        child.resolve()
+        for child in sorted(root.iterdir())
+        if child.is_dir() and (child / "meta" / "info.json").is_file()
+    ]
+    if not datasets:
+        raise FileNotFoundError(f"No LeRobot datasets found under: {root}")
+    return datasets
+
+
+def register_dataset_paths(path_text: str) -> list[tuple[str, Path]]:
+    registered = []
+    for root in discover_lerobot_dataset_paths(path_text):
+        dataset_id = dataset_id_for_path(root)
+        with _dataset_roots_lock:
+            _dataset_roots[dataset_id] = root
+        registered.append((dataset_id, root))
+    return registered
 
 
 def discover_default_datasets() -> None:
@@ -819,6 +845,22 @@ def run_batch_atomic_split_job(job_id: str) -> None:
             command.extend(["--video-keys", str(payload["videoKeys"])])
         if payload.get("losslessVideos", True):
             command.append("--lossless-video")
+        if payload.get("homeIgnoreDims"):
+            command.extend(["--home-ignore-dims", str(payload["homeIgnoreDims"])])
+        inactive_arm = str(payload.get("inactiveArm") or "").strip().lower()
+        if inactive_arm in {"left", "right"}:
+            command.extend(["--inactive-arm", inactive_arm])
+        active_arm = str(payload.get("activeArm") or "").strip().lower()
+        if active_arm in {"left", "right"}:
+            command.extend(["--active-arm", active_arm])
+        if payload.get("tailIgnoreFrames") is not None:
+            command.extend(["--tail-ignore-frames", str(int(payload.get("tailIgnoreFrames") or 0))])
+        if payload.get("boundarySelection"):
+            command.extend(["--boundary-selection", str(payload["boundarySelection"])])
+        if payload.get("videoWorkers"):
+            command.extend(["--video-workers", str(int(payload["videoWorkers"]))])
+        if payload.get("ffmpegThreads") is not None:
+            command.extend(["--ffmpeg-threads", str(int(payload.get("ffmpegThreads") or 0))])
 
         code = run_command_for_job(job_id, command)
         summary = load_json(output_root / f"{repo_prefix}_atomic_batch_split_summary.json", {})
@@ -871,10 +913,11 @@ def api_register_dataset() -> Response:
     if not path_text:
         abort(400, description="path is required")
     try:
-        dataset_id, _ = register_dataset_path(path_text)
+        registered = register_dataset_paths(path_text)
     except Exception as exc:
         abort(400, description=str(exc))
-    return jsonify({"dataset": dataset_summary(dataset_id)})
+    summaries = [dataset_summary(dataset_id) for dataset_id, _ in registered]
+    return jsonify({"dataset": summaries[0], "datasets": summaries})
 
 
 @app.get("/api/datasets/<dataset_id>/summary")
@@ -918,6 +961,17 @@ def api_episode_series(dataset_id: str, episode_name: str) -> Response:
     rows = table.to_pylist()
     feature_data = {key: [row_value_to_list(row.get(key)) for row in rows] for key in numeric_keys if key in table.column_names}
     text_data = {key: [str(row.get(key) or "") for row in rows] for key in text_keys if key in table.column_names}
+    features = info.get("features") or {}
+    feature_meta = {}
+    for key in feature_data:
+        names = (features.get(key) or {}).get("names")
+        if isinstance(names, list) and names and isinstance(names[0], list):
+            names = names[0]
+        feature_meta[key] = {
+            "names": names if isinstance(names, list) else [],
+            "shape": (features.get(key) or {}).get("shape"),
+            "dtype": (features.get(key) or {}).get("dtype"),
+        }
     row_meta = [
         {
             "timestamp": row.get("timestamp"),
@@ -933,6 +987,7 @@ def api_episode_series(dataset_id: str, episode_name: str) -> Response:
             "rowCount": len(rows),
             "rowMeta": row_meta,
             "featureData": feature_data,
+            "featureMeta": feature_meta,
             "textData": text_data,
             "numericKeys": list(feature_data),
             "videoKeys": feature_keys(info, dtype="video"),

@@ -36,8 +36,8 @@
           <p id="viewSubtitle">机器人数据、训练和推理的一体化管理入口。</p>
         </div>
         <div class="topbar-actions">
-          <input id="datasetPathInput" type="text" placeholder="/absolute/path/to/lerobot_dataset">
-          <button id="addDatasetButton" type="button">Add Dataset</button>
+          <input id="datasetPathInput" type="text" placeholder="/path/to/lerobot_dataset_or_parent">
+          <button id="addDatasetButton" type="button">Add Dataset(s)</button>
           <select id="globalDatasetSelect"></select>
           <button id="refreshButton" type="button">Refresh</button>
         </div>
@@ -259,6 +259,30 @@
             <label>
               <span>Video keys</span>
               <input id="atomicVideoKeysInput" type="text" placeholder="auto, or observation.images.cam_high,...">
+            </label>
+            <label>
+              <span>Inactive arm</span>
+              <select id="atomicInactiveArmSelect">
+                <option value="">none</option>
+                <option value="left">ignore left arm</option>
+                <option value="right">ignore right arm</option>
+              </select>
+            </label>
+            <label>
+              <span>Ignore dims</span>
+              <input id="atomicHomeIgnoreDimsInput" type="text" placeholder="0,1,2 or 7,8,9,10,11,12,13">
+            </label>
+            <label>
+              <span>Tail ignore frames</span>
+              <input id="atomicTailIgnoreFramesInput" type="number" min="0" value="120">
+            </label>
+            <label>
+              <span>Video workers</span>
+              <input id="atomicVideoWorkersInput" type="number" min="1" value="1">
+            </label>
+            <label>
+              <span>FFmpeg threads</span>
+              <input id="atomicFfmpegThreadsInput" type="number" min="0" value="0">
             </label>
           </div>
           <div class="check-grid">
