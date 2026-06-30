@@ -22,6 +22,7 @@ episode's initial home pose after every atomic action.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import math
 import os
@@ -125,6 +126,14 @@ class SegmentPlan:
     trimmed_start: int
     trimmed_end: int
     boundary_confidence: float
+
+
+@dataclass(frozen=True)
+class VideoJob:
+    source_video: Path
+    output_video: Path
+    start_frame: int
+    frame_count: int
 
 
 def _parse_specs(text: str, preset: str) -> list[SubtaskSpec]:
@@ -595,6 +604,8 @@ def _clip_video(
         "-pix_fmt",
         "yuv420p",
     ]
+    if args.ffmpeg_threads > 0:
+        command.extend(["-threads", str(args.ffmpeg_threads)])
     if args.lossless_video:
         command.extend(["-qp", "0"])
     else:
@@ -604,6 +615,43 @@ def _clip_video(
     if completed.returncode != 0:
         raise RuntimeError(f"ffmpeg failed for {source_video}\n{completed.stderr}")
     return True
+
+
+def _clip_video_job(job: VideoJob, args: argparse.Namespace) -> bool:
+    return _clip_video(
+        job.source_video,
+        job.output_video,
+        start_frame=job.start_frame,
+        frame_count=job.frame_count,
+        args=args,
+    )
+
+
+def _clip_videos(video_jobs: list[VideoJob], args: argparse.Namespace) -> tuple[int, int]:
+    if not video_jobs:
+        return 0, 0
+
+    workers = max(1, int(args.video_workers))
+    if workers == 1 or len(video_jobs) == 1:
+        written = 0
+        missing = 0
+        for job in video_jobs:
+            if _clip_video_job(job, args):
+                written += 1
+            else:
+                missing += 1
+        return written, missing
+
+    written = 0
+    missing = 0
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(_clip_video_job, job, args) for job in video_jobs]
+        for future in as_completed(futures):
+            if future.result():
+                written += 1
+            else:
+                missing += 1
+    return written, missing
 
 
 def _load_sources(source_paths: list[Path], planned_output_names: set[str]) -> list[SourceDataset]:
@@ -650,6 +698,8 @@ def split_batch(args: argparse.Namespace) -> dict[str, Any]:
 
     _, pq = _import_pyarrow()
     video_keys_by_source = _video_keys_for_sources(sources, args)
+    source_by_root = {source.root: source for source in sources}
+    source_tables: dict[tuple[Path, int], Any] = {}
     segments_by_label: dict[str, list[SegmentPlan]] = {spec.label: [] for spec in specs}
     failed_episodes: list[dict[str, Any]] = []
 
@@ -658,6 +708,8 @@ def split_batch(args: argparse.Namespace) -> dict[str, Any]:
             episode_index = int(episode["episode_index"])
             try:
                 table = pq.read_table(_episode_path(source.root, source.info, episode_index))
+                if args.cache_source_tables:
+                    source_tables[(source.root, episode_index)] = table
                 plans = _episode_segments(source, episode, table, specs, args)
             except Exception as exc:
                 if not args.skip_failed_episodes:
@@ -706,10 +758,13 @@ def split_batch(args: argparse.Namespace) -> dict[str, Any]:
         global_index = 0
         videos_written = 0
         videos_missing = 0
+        video_jobs: list[VideoJob] = []
 
         for new_episode_index, plan in enumerate(label_segments):
-            source = next(item for item in sources if item.root == plan.source_root)
-            source_table = pq.read_table(_episode_path(source.root, source.info, plan.source_episode_index))
+            source = source_by_root[plan.source_root]
+            source_table = source_tables.get((source.root, plan.source_episode_index))
+            if source_table is None:
+                source_table = pq.read_table(_episode_path(source.root, source.info, plan.source_episode_index))
             source_slice = source_table.slice(plan.start, plan.end - plan.start)
             table = _rewrite_table(
                 source_slice,
@@ -745,17 +800,14 @@ def split_batch(args: argparse.Namespace) -> dict[str, Any]:
 
             if args.split_videos:
                 for video_key in video_keys_by_source.get(source.root, []):
-                    wrote = _clip_video(
-                        _video_path(source.root, source.info, plan.source_episode_index, video_key),
-                        _output_video_path(dataset_root, new_episode_index, video_key, chunk_size),
-                        start_frame=plan.start,
-                        frame_count=frame_count,
-                        args=args,
+                    video_jobs.append(
+                        VideoJob(
+                            source_video=_video_path(source.root, source.info, plan.source_episode_index, video_key),
+                            output_video=_output_video_path(dataset_root, new_episode_index, video_key, chunk_size),
+                            start_frame=plan.start,
+                            frame_count=frame_count,
+                        )
                     )
-                    if wrote:
-                        videos_written += 1
-                    else:
-                        videos_missing += 1
 
             report_rows.append(
                 {
@@ -775,6 +827,9 @@ def split_batch(args: argparse.Namespace) -> dict[str, Any]:
                 }
             )
             global_index += frame_count
+
+        if args.split_videos:
+            videos_written, videos_missing = _clip_videos(video_jobs, args)
 
         output_info = dict(base_info)
         output_info.update(
@@ -846,7 +901,25 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--video-crf", type=int, default=23)
     parser.add_argument("--video-preset", default="fast")
+    parser.add_argument(
+        "--video-workers",
+        type=int,
+        default=1,
+        help="Number of ffmpeg video clipping jobs to run concurrently.",
+    )
+    parser.add_argument(
+        "--ffmpeg-threads",
+        type=int,
+        default=0,
+        help="Set ffmpeg -threads for each video job. Use 0 to let ffmpeg decide.",
+    )
     parser.add_argument("--lossless-video", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--cache-source-tables",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Cache source parquet tables after boundary detection to avoid rereading them during export.",
+    )
     parser.add_argument(
         "--home-ignore-dims",
         default="",
