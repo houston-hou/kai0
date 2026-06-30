@@ -314,8 +314,8 @@ async function renderMedia(episodeName) {
     const card = document.createElement("div");
     card.className = "video-card";
     card.innerHTML = `
-      <header>${video.key}${video.exists ? "" : " · missing"}</header>
-      ${video.exists ? `<video controls muted src="${video.url}"></video>` : "<div class='readout'>Missing video file</div>"}
+      <header>${video.key}${video.codec ? ` · ${video.codec}` : ""}${video.exists ? "" : " · missing"}</header>
+      ${video.exists ? `<video controls muted preload="metadata" src="${video.url}"></video>` : "<div class='readout'>Missing video file</div>"}
     `;
     grid.appendChild(card);
   });
@@ -416,6 +416,12 @@ function drawFeatureCanvas() {
     rows.forEach((row) => values.push(Number(row?.[dim])));
   }
   const finite = values.filter(Number.isFinite);
+  if (!finite.length) {
+    ctx.fillStyle = "#66736f";
+    ctx.fillText(`No finite values for ${currentFeature}`, 18, 28);
+    $("#featureStatus").textContent = `${currentFeature} · no finite values`;
+    return;
+  }
   const min = Math.min(...finite);
   const max = Math.max(...finite);
   const span = Math.max(max - min, 1e-6);

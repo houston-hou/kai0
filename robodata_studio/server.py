@@ -22,6 +22,7 @@ STUDIO_DIR = Path(__file__).resolve().parent
 ROOT_DIR = STUDIO_DIR.parent
 TRAINING_DATA_ROOT = STUDIO_DIR.parent.parent / "organ_data_le"
 CHECKPOINTS_ROOT = ROOT_DIR / "checkpoints"
+VIDEO_CACHE_ROOT = STUDIO_DIR / "work" / "video_preview_cache"
 TRIM_SCRIPT = STUDIO_DIR / "trim_idle_edges_dataset.py"
 ATOMIC_SPLIT_SCRIPT = STUDIO_DIR / "split_lerobot_atomic_actions.py"
 BATCH_ATOMIC_SPLIT_SCRIPT = STUDIO_DIR / "batch_split_data.py"
@@ -221,6 +222,67 @@ def video_path(root: Path, info: dict[str, Any], episode_name: str, video_key: s
     chunk = episode_chunk(info, episode_index)
     template = info.get("video_path") or "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
     return root / template.format(episode_chunk=chunk, episode_index=episode_index, video_key=video_key)
+
+
+def video_codec(info: dict[str, Any], video_key: str) -> str:
+    feature = ((info.get("features") or {}).get(video_key) or {})
+    payload = feature.get("info") or {}
+    return str(payload.get("video.codec") or payload.get("codec") or "").lower()
+
+
+def ffmpeg_executable() -> str:
+    env_ffmpeg = os.environ.get("ROBODATA_STUDIO_FFMPEG")
+    if env_ffmpeg:
+        return env_ffmpeg
+    try:
+        import imageio_ffmpeg  # type: ignore
+
+        candidate = imageio_ffmpeg.get_ffmpeg_exe()
+        if candidate and Path(candidate).exists():
+            return candidate
+    except Exception:
+        pass
+    return "ffmpeg"
+
+
+def preview_video_path(source: Path) -> Path:
+    digest = hashlib.sha256(str(source.resolve()).encode("utf-8")).hexdigest()[:24]
+    return VIDEO_CACHE_ROOT / digest[:2] / f"{source.stem}-{digest}.mp4"
+
+
+def ensure_preview_video(source: Path) -> Path:
+    target = preview_video_path(source)
+    if target.exists() and target.stat().st_mtime >= source.stat().st_mtime and target.stat().st_size > 0:
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_target = target.with_suffix(".tmp.mp4")
+    if tmp_target.exists():
+        tmp_target.unlink()
+    command = [
+        ffmpeg_executable(),
+        "-y",
+        "-i",
+        str(source),
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-pix_fmt",
+        "yuv420p",
+        "-crf",
+        "28",
+        "-movflags",
+        "+faststart",
+        str(tmp_target),
+    ]
+    completed = subprocess.run(command, text=True, capture_output=True, check=False)
+    if completed.returncode != 0 or not tmp_target.exists() or tmp_target.stat().st_size <= 0:
+        if tmp_target.exists():
+            tmp_target.unlink()
+        abort(500, description=f"Failed to create H.264 preview for {source.name}: {completed.stderr[-1200:]}")
+    tmp_target.replace(target)
+    return target
 
 
 def safe_dataset_file(root: Path, relative_path: str) -> Path:
@@ -1004,12 +1066,17 @@ def api_episode_media(dataset_id: str, episode_name: str) -> Response:
     videos = []
     for key in feature_keys(info, dtype="video"):
         path = video_path(root, info, normalized_episode, key)
+        codec = video_codec(info, key)
+        original_url = f"/api/datasets/{dataset_id}/episode/{normalized_episode}/video/{key}"
+        preview_url = f"/api/datasets/{dataset_id}/episode/{normalized_episode}/preview-video/{key}"
         videos.append(
             {
                 "key": key,
+                "codec": codec,
                 "exists": path.exists(),
                 "path": display_path(path) if path.exists() else "",
-                "url": f"/api/datasets/{dataset_id}/episode/{normalized_episode}/video/{key}",
+                "url": preview_url if codec in {"av1", "libsvtav1"} else original_url,
+                "sourceUrl": original_url,
             }
         )
     return jsonify({"videos": videos})
@@ -1055,6 +1122,19 @@ def api_episode_video(dataset_id: str, episode_name: str, video_key: str) -> Res
     if not path.exists():
         abort(404, description=f"Video not found: {key}")
     return send_from_directory(path.parent, path.name, mimetype="video/mp4")
+
+
+@app.get("/api/datasets/<dataset_id>/episode/<path:episode_name>/preview-video/<path:video_key>")
+def api_episode_preview_video(dataset_id: str, episode_name: str, video_key: str) -> Response:
+    root = dataset_root(unquote(dataset_id))
+    normalized_episode = unquote(episode_name)
+    key = unquote(video_key)
+    info = load_json(root / "meta" / "info.json", {})
+    source = video_path(root, info, normalized_episode, key)
+    if not source.exists():
+        abort(404, description=f"Video not found: {key}")
+    preview = ensure_preview_video(source)
+    return send_from_directory(preview.parent, preview.name, mimetype="video/mp4")
 
 
 @app.get("/api/datasets/<dataset_id>/file")
