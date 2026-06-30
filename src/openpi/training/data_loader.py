@@ -219,7 +219,7 @@ def episodes_split_through_task(repo_id: str, split_ratio: float = 0.9, split_ty
     episodes_meta = dataset_meta.episodes
     episodes_index = [key for key in episodes_meta.keys()]
     # tasks = [episodes_meta[idx]["tasks"] for idx in episodes_index]
-    if split_type == "all":
+    if split_type == "all":shi
         return episodes_index
     else:
         episodes_index_dict = {}
