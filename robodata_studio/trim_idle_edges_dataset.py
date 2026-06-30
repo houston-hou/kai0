@@ -81,6 +81,7 @@ class Args:
     ffmpeg: str = "ffmpeg"
     video_crf: int = 23
     video_preset: str = "fast"
+    video_fps: float = 0
     lossless_video: bool = False
     workers: int = 1
 
@@ -407,6 +408,8 @@ def _trim_video(
         cmd.extend(["-qp", "0"])
     else:
         cmd.extend(["-crf", str(args.video_crf)])
+    if args.video_fps > 0:
+        cmd.extend(["-r", str(args.video_fps)])
     cmd.extend(["-movflags", "+faststart", str(output_video)])
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -651,6 +654,8 @@ def main(args: Args) -> None:
         raise FileExistsError(f"Output dataset already exists: {output_root}. Use --overwrite to replace it.")
 
     info = _load_json(source_meta_dir / "info.json")
+    if args.video_fps <= 0:
+        args.video_fps = float(info.get("fps") or 30)
     episodes = _select_episodes(_load_jsonl(source_meta_dir / "episodes.jsonl"), args)
     source_stats_by_episode = _load_episode_stats(source_meta_dir)
     video_keys = _parse_video_keys(args.video_keys) or _detect_video_keys(source_root, info, episodes)
@@ -836,6 +841,12 @@ def _parse_args() -> Args:
     parser.add_argument("--ffmpeg", default=defaults.ffmpeg)
     parser.add_argument("--video-crf", type=int, default=defaults.video_crf)
     parser.add_argument("--video-preset", default=defaults.video_preset)
+    parser.add_argument(
+        "--video-fps",
+        type=float,
+        default=defaults.video_fps,
+        help="Output video FPS. Use 0 to inherit fps from source meta/info.json.",
+    )
     parser.add_argument(
         "--lossless-video",
         action=argparse.BooleanOptionalAction,

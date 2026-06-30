@@ -707,6 +707,8 @@ def _clip_video(
         command.extend(["-qp", "0"])
     else:
         command.extend(["-crf", str(args.video_crf)])
+    if args.video_fps > 0:
+        command.extend(["-r", str(args.video_fps)])
     command.extend(["-movflags", "+faststart", str(output_video)])
     completed = subprocess.run(command, text=True, capture_output=True, check=False)
     if completed.returncode != 0:
@@ -839,6 +841,8 @@ def split_batch(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     base_info = dict(sources[0].info)
+    if args.video_fps <= 0:
+        args.video_fps = float(base_info.get("fps") or 30)
     chunk_size = max(int(base_info.get("chunks_size") or 1000), 1)
     for task_index, spec in enumerate(specs):
         label_segments = segments_by_label[spec.label]
@@ -998,6 +1002,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--video-crf", type=int, default=23)
     parser.add_argument("--video-preset", default="fast")
+    parser.add_argument(
+        "--video-fps",
+        type=float,
+        default=0,
+        help="Output video FPS. Use 0 to inherit fps from source meta/info.json.",
+    )
     parser.add_argument(
         "--video-workers",
         type=int,

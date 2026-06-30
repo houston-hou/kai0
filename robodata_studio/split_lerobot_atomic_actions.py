@@ -224,6 +224,7 @@ def _clip_video(
     crf: int,
     preset: str,
     lossless: bool,
+    fps: float,
 ) -> bool:
     if not source_video.exists():
         print(f"warning: missing video {source_video}")
@@ -251,6 +252,8 @@ def _clip_video(
         command.extend(["-qp", "0"])
     else:
         command.extend(["-crf", str(crf)])
+    if fps > 0:
+        command.extend(["-r", str(fps)])
     command.extend(
         [
             "-movflags",
@@ -317,6 +320,8 @@ def split_dataset(args: argparse.Namespace) -> dict[str, Any]:
     output_root = args.output_root.resolve()
     source_meta = source_root / "meta"
     info = _load_json(source_meta / "info.json")
+    if args.video_fps <= 0:
+        args.video_fps = float(info.get("fps") or 30)
     source_episodes = _load_jsonl(source_meta / "episodes.jsonl")
     source_episode_map = {int(item["episode_index"]): item for item in source_episodes}
     segments = _normalize_segments(_load_json(args.labels_json))
@@ -396,6 +401,7 @@ def split_dataset(args: argparse.Namespace) -> dict[str, Any]:
                         crf=args.video_crf,
                         preset=args.video_preset,
                         lossless=args.lossless_video,
+                        fps=args.video_fps,
                     )
                     if wrote:
                         videos_written += 1
@@ -464,6 +470,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--video-crf", type=int, default=23)
     parser.add_argument("--video-preset", default="fast")
+    parser.add_argument(
+        "--video-fps",
+        type=float,
+        default=0,
+        help="Output video FPS. Use 0 to inherit fps from source meta/info.json.",
+    )
     parser.add_argument("--lossless-video", action=argparse.BooleanOptionalAction, default=False)
     return parser.parse_args()
 
