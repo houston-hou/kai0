@@ -1447,12 +1447,411 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "/mnt/hdy/kai0-main/weights_cache/openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=100,
-        log_interval=50,
+        num_train_steps=11000,
+        log_interval=100,
         save_interval=1000,
-        keep_period=None,
-        num_workers=0,
-        batch_size=16,
+        keep_period=5000,
+        num_workers=64,
+        batch_size=320,
+        fsdp_devices=1,
+        wandb_enabled=True,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2e-4,
+            warmup_steps=1000,
+            decay_steps=10_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(),
+    ),
+
+    TrainConfig(
+        name="boat2balance_agilex",
+        model=pi0_config.Pi0Config(pi05=True, active_arm="right"),
+        data=LerobotAgilexDataConfig(
+            repo_id=None,
+            use_multi_repo=True,
+            repo_ids=[
+                "solid_pick_weighing_boat_to_balance"
+            ],
+            root="/mnt/hdy/organ_data/organ_data_le/solid_atom/",
+            assets=AssetsConfig(asset_id="boat2balance_agilex"),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "top_head": "observation.images.cam_high",
+                                "hand_left": "observation.images.cam_left_wrist",
+                                "hand_right": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=False,
+        ),
+        freeze_filter=nnx.All(
+            nnx.Any(
+                nnx_utils.PathRegex(r".*llm.*"),
+                nnx_utils.PathRegex(r".*PaliGemma/img.*"),
+            ),
+            nnx.Not(nnx_utils.PathRegex(r".*llm.*_1.*")),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/mnt/hdy/kai0-main/weights_cache/openpi-assets/checkpoints/pi05_base/params"
+        ),
+        num_train_steps=11000,
+        log_interval=100,
+        save_interval=1000,
+        keep_period=5000,
+        num_workers=64,
+        batch_size=320,
+        fsdp_devices=1,
+        wandb_enabled=True,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2e-4,
+            warmup_steps=1000,
+            decay_steps=10_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(),
+    ),
+
+    TrainConfig(
+        name="solid2reactor_agilex",
+        model=pi0_config.Pi0Config(pi05=True, active_arm="right"),
+        data=LerobotAgilexDataConfig(
+            repo_id=None,
+            use_multi_repo=True,
+            repo_ids=[
+                "solid_pour_solid_to_reactor"
+            ],
+            root="/mnt/hdy/organ_data/organ_data_le/solid_atom/",
+            assets=AssetsConfig(asset_id="solid2reactor_agilex"),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "top_head": "observation.images.cam_high",
+                                "hand_left": "observation.images.cam_left_wrist",
+                                "hand_right": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=False,
+        ),
+        freeze_filter=nnx.All(
+            nnx.Any(
+                nnx_utils.PathRegex(r".*llm.*"),
+                nnx_utils.PathRegex(r".*PaliGemma/img.*"),
+            ),
+            nnx.Not(nnx_utils.PathRegex(r".*llm.*_1.*")),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/mnt/hdy/kai0-main/weights_cache/openpi-assets/checkpoints/pi05_base/params"
+        ),
+        num_train_steps=11000,
+        log_interval=100,
+        save_interval=1000,
+        keep_period=5000,
+        num_workers=64,
+        batch_size=320,
+        fsdp_devices=1,
+        wandb_enabled=True,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2e-4,
+            warmup_steps=1000,
+            decay_steps=10_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(),
+    ),
+
+    TrainConfig(
+        name="press_button_agilex",
+        model=pi0_config.Pi0Config(pi05=True, active_arm="right"),
+        data=LerobotAgilexDataConfig(
+            repo_id=None,
+            use_multi_repo=True,
+            repo_ids=[
+                "solid_press_tare_button"
+            ],
+            root="/mnt/hdy/organ_data/organ_data_le/solid_atom/",
+            assets=AssetsConfig(asset_id="press_button_agilex"),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "top_head": "observation.images.cam_high",
+                                "hand_left": "observation.images.cam_left_wrist",
+                                "hand_right": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=False,
+        ),
+        freeze_filter=nnx.All(
+            nnx.Any(
+                nnx_utils.PathRegex(r".*llm.*"),
+                nnx_utils.PathRegex(r".*PaliGemma/img.*"),
+            ),
+            nnx.Not(nnx_utils.PathRegex(r".*llm.*_1.*")),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/mnt/hdy/kai0-main/weights_cache/openpi-assets/checkpoints/pi05_base/params"
+        ),
+        num_train_steps=11000,
+        log_interval=100,
+        save_interval=1000,
+        keep_period=5000,
+        num_workers=64,
+        batch_size=320,
+        fsdp_devices=1,
+        wandb_enabled=True,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2e-4,
+            warmup_steps=1000,
+            decay_steps=10_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(),
+    ),
+
+    TrainConfig(
+        name="solid2boat_agilex",
+        model=pi0_config.Pi0Config(pi05=True, active_arm="right"),
+        data=LerobotAgilexDataConfig(
+            repo_id=None,
+            use_multi_repo=True,
+            repo_ids=[
+                "solid_scoop_solid_to_weighing_boat"
+            ],
+            root="/mnt/hdy/organ_data/organ_data_le/solid_atom/",
+            assets=AssetsConfig(asset_id="solid2boat_agilex"),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "top_head": "observation.images.cam_high",
+                                "hand_left": "observation.images.cam_left_wrist",
+                                "hand_right": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=False,
+        ),
+        freeze_filter=nnx.All(
+            nnx.Any(
+                nnx_utils.PathRegex(r".*llm.*"),
+                nnx_utils.PathRegex(r".*PaliGemma/img.*"),
+            ),
+            nnx.Not(nnx_utils.PathRegex(r".*llm.*_1.*")),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/mnt/hdy/kai0-main/weights_cache/openpi-assets/checkpoints/pi05_base/params"
+        ),
+        num_train_steps=11000,
+        log_interval=100,
+        save_interval=1000,
+        keep_period=5000,
+        num_workers=64,
+        batch_size=320,
+        fsdp_devices=1,
+        wandb_enabled=True,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2e-4,
+            warmup_steps=1000,
+            decay_steps=10_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(),
+    ),
+
+    TrainConfig(
+        name="place_distillation_agilex",
+        model=pi0_config.Pi0Config(pi05=True, active_arm="left"),
+        data=LerobotAgilexDataConfig(
+            repo_id=None,
+            use_multi_repo=True,
+            repo_ids=[
+                "distill_place_distillation_rack"
+            ],
+            root="/mnt/hdy/organ_data/organ_data_le/boil_atom/",
+            assets=AssetsConfig(asset_id="place_distillation_agilex"),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "top_head": "observation.images.cam_high",
+                                "hand_left": "observation.images.cam_left_wrist",
+                                "hand_right": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=False,
+        ),
+        freeze_filter=nnx.All(
+            nnx.Any(
+                nnx_utils.PathRegex(r".*llm.*"),
+                nnx_utils.PathRegex(r".*PaliGemma/img.*"),
+            ),
+            nnx.Not(nnx_utils.PathRegex(r".*llm.*_1.*")),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/mnt/hdy/kai0-main/weights_cache/openpi-assets/checkpoints/pi05_base/params"
+        ),
+        num_train_steps=11000,
+        log_interval=100,
+        save_interval=1000,
+        keep_period=5000,
+        num_workers=64,
+        batch_size=320,
+        fsdp_devices=1,
+        wandb_enabled=True,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2e-4,
+            warmup_steps=1000,
+            decay_steps=10_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(),
+    ),
+
+    TrainConfig(
+        name="funnel2rack_agilex",
+        model=pi0_config.Pi0Config(pi05=True, active_arm="left"),
+        data=LerobotAgilexDataConfig(
+            repo_id=None,
+            use_multi_repo=True,
+            repo_ids=[
+                "distill_return_funnel_to_rack"
+            ],
+            root="/mnt/hdy/organ_data/organ_data_le/boil_atom/",
+            assets=AssetsConfig(asset_id="funnel2rack_agilex"),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "top_head": "observation.images.cam_high",
+                                "hand_left": "observation.images.cam_left_wrist",
+                                "hand_right": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=False,
+        ),
+        freeze_filter=nnx.All(
+            nnx.Any(
+                nnx_utils.PathRegex(r".*llm.*"),
+                nnx_utils.PathRegex(r".*PaliGemma/img.*"),
+            ),
+            nnx.Not(nnx_utils.PathRegex(r".*llm.*_1.*")),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/mnt/hdy/kai0-main/weights_cache/openpi-assets/checkpoints/pi05_base/params"
+        ),
+        num_train_steps=11000,
+        log_interval=100,
+        save_interval=1000,
+        keep_period=5000,
+        num_workers=64,
+        batch_size=320,
+        fsdp_devices=1,
+        wandb_enabled=True,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2e-4,
+            warmup_steps=1000,
+            decay_steps=10_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(),
+    ),
+
+    TrainConfig(
+        name="turn_knob_agilex",
+        model=pi0_config.Pi0Config(pi05=True, active_arm="left"),
+        data=LerobotAgilexDataConfig(
+            repo_id=None,
+            use_multi_repo=True,
+            repo_ids=[
+                "distill_turn_reactor_knob"
+            ],
+            root="/mnt/hdy/organ_data/organ_data_le/boil_atom/",
+            assets=AssetsConfig(asset_id="turn_knob_agilex"),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "top_head": "observation.images.cam_high",
+                                "hand_left": "observation.images.cam_left_wrist",
+                                "hand_right": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=False,
+        ),
+        freeze_filter=nnx.All(
+            nnx.Any(
+                nnx_utils.PathRegex(r".*llm.*"),
+                nnx_utils.PathRegex(r".*PaliGemma/img.*"),
+            ),
+            nnx.Not(nnx_utils.PathRegex(r".*llm.*_1.*")),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/mnt/hdy/kai0-main/weights_cache/openpi-assets/checkpoints/pi05_base/params"
+        ),
+        num_train_steps=11000,
+        log_interval=100,
+        save_interval=1000,
+        keep_period=5000,
+        num_workers=64,
+        batch_size=320,
         fsdp_devices=1,
         wandb_enabled=False,
         lr_schedule=_optimizer.CosineDecaySchedule(
