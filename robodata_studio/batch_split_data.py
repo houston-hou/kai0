@@ -362,72 +362,6 @@ def _trim_segment_bounds(
     return trim_start, trim_end, trim_start - raw_start, raw_end - trim_end
 
 
-# def _score_boundaries(
-#     states: list[list[float]],
-#     actions: list[list[float]],
-#     specs: list[SubtaskSpec],
-#     args: argparse.Namespace,
-# ) -> tuple[list[int], list[float]]:
-#     if not states:
-#         return [], []
-#     needed = len(specs) - 1
-#     if needed <= 0:
-#         return [], []
-#     home_pose = _mean_pose(states, args.home_window)
-#     home_ignore_dims = _parse_dim_indices(args.home_ignore_dims, len(home_pose))
-#     scored: list[dict[str, float]] = []
-#     for index, state in enumerate(states):
-#         action_norm = _norm(actions[index]) if index < len(actions) and actions[index] else 0.0
-#         velocity = _state_velocity(states, index)
-#         ratio = _home_ratio(state, home_pose, args.joint_threshold, home_ignore_dims)
-#         score = ratio - min(velocity, 1.0) * 0.35 - min(action_norm, 1.0) * 0.15
-#         scored.append({"frame": float(index), "score": score, "home_ratio": ratio, "velocity": velocity})
-
-#     margin = max(args.margin, args.min_gap)
-#     cluster_peaks: list[dict[str, float]] = []
-#     current_cluster: list[dict[str, float]] = []
-#     for item in scored[margin : max(margin, len(scored) - margin)]:
-#         if item["home_ratio"] < args.min_home_ratio:
-#             if current_cluster:
-#                 cluster_peaks.append(max(current_cluster, key=lambda candidate: candidate["score"]))
-#                 current_cluster = []
-#             continue
-#         if current_cluster and int(item["frame"]) - int(current_cluster[-1]["frame"]) > args.min_gap:
-#             cluster_peaks.append(max(current_cluster, key=lambda candidate: candidate["score"]))
-#             current_cluster = []
-#         current_cluster.append(item)
-#     if current_cluster:
-#         cluster_peaks.append(max(current_cluster, key=lambda candidate: candidate["score"]))
-
-#     if len(cluster_peaks) == needed:
-#         cluster_peaks.sort(key=lambda item: item["frame"])
-#         return [int(item["frame"]) for item in cluster_peaks], [float(item["home_ratio"]) for item in cluster_peaks]
-
-#     boundaries: list[int] = []
-#     confidences: list[float] = []
-#     for transition_index in range(1, len(specs)):
-#         target = round(len(states) * transition_index / len(specs))
-#         search_start = max(margin, target - args.search_radius)
-#         search_end = min(len(states) - margin, target + args.search_radius)
-#         window = [
-#             item
-#             for item in cluster_peaks
-#             if search_start <= int(item["frame"]) <= search_end and int(item["frame"]) not in boundaries
-#         ]
-#         if not window:
-#             window = [
-#                 item
-#                 for item in scored[search_start:search_end]
-#                 if item["home_ratio"] >= args.fallback_home_ratio
-#             ]
-#         if not window:
-#             continue
-#         chosen = max(window, key=lambda item: item["score"])
-#         boundaries.append(int(chosen["frame"]))
-#         confidences.append(float(chosen["home_ratio"]))
-#     return boundaries, confidences
-
-
 def _score_boundaries(
     states: list[list[float]],
     actions: list[list[float]],
@@ -474,6 +408,25 @@ def _score_boundaries(
     intervals: list[dict[str, float]] = []
     current: list[dict[str, float]] = []
 
+    def has_post_motion(end_frame: int) -> bool:
+        lookahead = int(getattr(args, "post_boundary_lookahead", 120) or 120)
+        required = int(getattr(args, "min_post_boundary_non_home_frames", 5) or 5)
+
+        count = 0
+        for item in samples:
+            frame = int(item["frame"])
+            if frame <= end_frame:
+                continue
+            if frame > end_frame + lookahead:
+                break
+            if item["home_ratio"] < args.min_home_ratio:
+                count += 1
+                if count >= required:
+                    return True
+        return False
+
+
+
     def close_interval() -> None:
         nonlocal current
 
@@ -482,6 +435,10 @@ def _score_boundaries(
 
         start = int(current[0]["frame"])
         end = int(current[-1]["frame"])
+
+        if not has_post_motion(end):
+            current = []
+            return
 
         scores = [item["score"] for item in current]
         ratios = [item["home_ratio"] for item in current]
@@ -1061,6 +1018,18 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=5,
         help="Sample every N frames when detecting high-score boundary intervals.",
+    )
+    parser.add_argument(
+        "--post-boundary-lookahead",
+        type=int,
+        default=200,
+        help="A boundary home interval must be followed by non-home frames within this many frames.",
+    )
+    parser.add_argument(
+        "--min-post-boundary-non-home-frames",
+        type=int,
+        default=5,
+        help="Minimum sampled non-home frames required after a boundary candidate.",
     )
     return parser.parse_args()
 
