@@ -362,6 +362,63 @@ def _trim_segment_bounds(
     return trim_start, trim_end, trim_start - raw_start, raw_end - trim_end
 
 
+def _far_enough_from_selected(
+    item: dict[str, float],
+    selected: list[dict[str, float]],
+    min_gap_frames: int,
+) -> bool:
+    center = int(item["center"])
+    return all(abs(center - int(other["center"])) >= min_gap_frames for other in selected)
+
+def _merge_nearby_intervals(
+    intervals: list[dict[str, float]],
+    max_gap_frames: int,
+) -> list[dict[str, float]]:
+    if not intervals:
+        return []
+
+    if max_gap_frames <= 0:
+        return sorted(intervals, key=lambda item: item["start"])
+
+    ordered = sorted(intervals, key=lambda item: item["start"])
+    merged: list[dict[str, float]] = []
+
+    for item in ordered:
+        item = dict(item)
+
+        if not merged:
+            merged.append(item)
+            continue
+
+        previous = merged[-1]
+        gap = int(item["start"]) - int(previous["end"])
+
+        if gap > max_gap_frames:
+            merged.append(item)
+            continue
+
+        previous_count = max(float(previous.get("sample_count", 1.0)), 1.0)
+        item_count = max(float(item.get("sample_count", 1.0)), 1.0)
+        total_count = previous_count + item_count
+
+        start = int(previous["start"])
+        end = int(item["end"])
+
+        previous["start"] = float(start)
+        previous["end"] = float(end)
+        previous["center"] = float((start + end) // 2)
+        previous["duration"] = float(end - start + 1)
+        previous["sample_count"] = float(total_count)
+        previous["score"] = float(
+            (float(previous["score"]) * previous_count + float(item["score"]) * item_count)
+            / total_count
+        )
+        previous["peak_score"] = float(max(float(previous["peak_score"]), float(item["peak_score"])))
+        previous["home_ratio"] = float(max(float(previous["home_ratio"]), float(item["home_ratio"])))
+
+    return merged
+
+
 def _score_boundaries(
     states: list[list[float]],
     actions: list[list[float]],
@@ -373,6 +430,7 @@ def _score_boundaries(
         return [], []
 
     needed = len(specs) - 1
+    candidate_interval = needed + 1
     if needed <= 0:
         return [], []
 
@@ -381,8 +439,8 @@ def _score_boundaries(
     stride = max(1, int(args.boundary_sample_stride))
     margin = max(args.margin, args.min_gap)
     sample_start = margin
-    tail_ignore = max(0, int(getattr(args, "tail_ignore_frames", 0) or 0))
-    sample_end = max(sample_start, len(states) - max(margin, tail_ignore))
+    # tail_ignore = max(0, int(getattr(args, "tail_ignore_frames", 0) or 0))
+    sample_end = max(sample_start, len(states) - margin)
 
     if sample_end <= sample_start:
         return [], []
@@ -408,24 +466,6 @@ def _score_boundaries(
     intervals: list[dict[str, float]] = []
     current: list[dict[str, float]] = []
 
-    def has_post_motion(end_frame: int) -> bool:
-        lookahead = int(getattr(args, "post_boundary_lookahead", 120) or 120)
-        required = int(getattr(args, "min_post_boundary_non_home_frames", 5) or 5)
-
-        count = 0
-        for item in samples:
-            frame = int(item["frame"])
-            if frame <= end_frame:
-                continue
-            if frame > end_frame + lookahead:
-                break
-            if item["home_ratio"] < args.min_home_ratio:
-                count += 1
-                if count >= required:
-                    return True
-        return False
-
-
 
     def close_interval() -> None:
         nonlocal current
@@ -435,10 +475,6 @@ def _score_boundaries(
 
         start = int(current[0]["frame"])
         end = int(current[-1]["frame"])
-
-        if not has_post_motion(end):
-            current = []
-            return
 
         scores = [item["score"] for item in current]
         ratios = [item["home_ratio"] for item in current]
@@ -485,10 +521,12 @@ def _score_boundaries(
 
     # Do not close a trailing home interval.
     # The final return-to-home after the last task is not a boundary.
+    close_interval()
 
     intervals = [item for item in intervals if int(item["end"]) < sample_end]
+    intervals = _merge_nearby_intervals(intervals, args.merge_boundary_gap_frames)
 
-    if len(intervals) < needed:
+    if len(intervals) < candidate_interval:
         raise RuntimeError(
             f"Found {len(intervals)} high-score boundary intervals, expected at least {needed}. "
             f"The initial home region and final return-to-home region are ignored. "
@@ -500,7 +538,7 @@ def _score_boundaries(
     used: set[int] = set()
     selection = str(getattr(args, "boundary_selection", "ordered") or "ordered").strip().lower()
     if selection == "top":
-        selected = sorted(
+        ranked = sorted(
             intervals,
             key=lambda item: (
                 item["score"],
@@ -509,8 +547,25 @@ def _score_boundaries(
                 item["duration"],
             ),
             reverse=True,
-        )[:needed]
+        )
+        # [:candidate_interval]
+        # selected.sort(key=lambda item: item["center"])
+        # selected = selected[:-1]
+
+        selected = []
+        min_boundary_gap = max(0, int(getattr(args, "min_boundary_gap_frames", 0) or 0))
+
+        for item in ranked:
+            if _far_enough_from_selected(item, selected, min_boundary_gap):
+                selected.append(item)
+                if len(selected) >= candidate_interval:
+                    break
+
         selected.sort(key=lambda item: item["center"])
+
+        if candidate_interval > needed:
+            selected = selected[:-1]
+
     else:
         for transition_index in range(1, len(specs)):
             target = round(len(states) * transition_index / len(specs))
@@ -1004,12 +1059,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tail-ignore-frames",
         type=int,
-        default=120,
+        default=5,
         help="Ignore this many frames at the end so the final return-home pose is not selected as a boundary.",
     )
     parser.add_argument(
         "--boundary-selection",
-        default="ordered",
+        default="top",
         choices=["ordered", "top"],
         help="ordered selects one boundary near each expected transition; top keeps the old global top-score behavior.",
     )
@@ -1020,16 +1075,16 @@ def _parse_args() -> argparse.Namespace:
         help="Sample every N frames when detecting high-score boundary intervals.",
     )
     parser.add_argument(
-        "--post-boundary-lookahead",
+        "--min-boundary-gap-frames",
         type=int,
-        default=200,
-        help="A boundary home interval must be followed by non-home frames within this many frames.",
+        default=120,
+        help="Minimum frame distance between selected boundary centers.",
     )
     parser.add_argument(
-        "--min-post-boundary-non-home-frames",
+        "--merge-boundary-gap-frames",
         type=int,
-        default=5,
-        help="Minimum sampled non-home frames required after a boundary candidate.",
+        default=45,
+        help="Merge adjacent boundary intervals separated by at most this many frames.",
     )
     return parser.parse_args()
 
